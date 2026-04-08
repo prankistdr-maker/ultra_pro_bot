@@ -1,4 +1,16 @@
+def market_mode(signals):
+    if signals["structure"] == "HH" and signals["trend"] == "bullish":
+        return "TREND"
+
+    if signals["structure"] == "range":
+        return "SCALP"
+
+    return "NORMAL"
+
+
 def decide(signals):
+    mode = market_mode(signals)
+
     score = 0
 
     if signals["trend"] == "bullish":
@@ -19,15 +31,14 @@ def decide(signals):
     if signals["rsi"] < 45:
         score += 1
 
-    # ❌ Avoid sideways market
-    if signals["structure"] == "range":
-        return "HOLD", score
+    # MODE BASED ENTRY
+    if mode == "SCALP" and score >= 3:
+        return "BUY", score, mode
 
-    # ❌ Avoid bearish setups
-    if signals["trend"] == "bearish":
-        return "HOLD", score
+    if mode == "TREND" and score >= 5:
+        return "BUY", score, mode
 
-    if score >= 5:
-        return "BUY", score
+    if mode == "NORMAL" and score >= 4:
+        return "BUY", score, mode
 
-    return "HOLD", score
+    return "HOLD", score, mode
