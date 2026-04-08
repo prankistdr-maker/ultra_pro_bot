@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Trading Bot PRO</title>
+
+    <style>
+        body {
+            background: #0b0f1a;
+            color: #e5e7eb;
+            font-family: Arial;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #00ffcc;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+
+        .card {
+            background: #111827;
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        .green { color: #00ff99; }
+        .red { color: #ff4d4d; }
+
+        table {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        td {
+            padding: 5px;
+        }
+
+        pre {
+            font-size: 12px;
+        }
+    </style>
+
+</head>
+<body>
+
+<h1>🚀 AI Trading Bot PRO</h1>
+
+<div class="grid">
+
+    <div class="card">
+        <h3>Price</h3>
+        <div id="price">--</div>
+    </div>
+
+    <div class="card">
+        <h3>Balance</h3>
+        <div id="balance">--</div>
+    </div>
+
+    <div class="card">
+        <h3>PnL</h3>
+        <div id="pnl">--</div>
+    </div>
+
+    <div class="card">
+        <h3>Win Rate</h3>
+        <div id="winrate">--</div>
+    </div>
+
+    <div class="card">
+        <h3>Last Action</h3>
+        <div id="action">--</div>
+    </div>
+
+    <div class="card">
+        <h3>Confidence</h3>
+        <div id="confidence">--</div>
+    </div>
+
+</div>
+
+<br>
+
+<div class="card">
+    <h3>📊 Open Positions</h3>
+    <pre id="positions"></pre>
+</div>
+
+<br>
+
+<div class="card">
+    <h3>🧠 AI Signals</h3>
+    <pre id="signals"></pre>
+</div>
+
+<br>
+
+<div class="card">
+    <h3>📜 Trade History</h3>
+    <table id="trades"></table>
+</div>
+
+<script>
+
+async function updateUI() {
+    try {
+        const res = await fetch("/data");
+        const data = await res.json();
+
+        // BASIC DATA
+        document.getElementById("price").innerText = data.price.toFixed(2);
+        document.getElementById("balance").innerText = data.balance.toFixed(2);
+
+        // PNL
+        let pnl = data.pnl;
+        let pnlEl = document.getElementById("pnl");
+        pnlEl.innerText = pnl.toFixed(2);
+        pnlEl.className = pnl >= 0 ? "green" : "red";
+
+        // ACTION + CONFIDENCE
+        document.getElementById("action").innerText = data.last_action;
+        document.getElementById("confidence").innerText = data.confidence;
+
+        // SIGNALS
+        document.getElementById("signals").innerText =
+            JSON.stringify(data.signals, null, 2);
+
+        // POSITIONS
+        document.getElementById("positions").innerText =
+            JSON.stringify(data.positions, null, 2);
+
+        // WIN RATE
+        let wins = data.trades.filter(t => t > 0).length;
+        let total = data.trades.length;
+        let winrate = total > 0 ? ((wins / total) * 100).toFixed(1) : 0;
+
+        document.getElementById("winrate").innerText = winrate + "%";
+
+        // TRADE HISTORY
+        let table = "";
+
+        data.trades.slice(-10).reverse().forEach((t, i) => {
+            table += `
+                <tr>
+                    <td>Trade ${i+1}</td>
+                    <td class="${t >= 0 ? 'green' : 'red'}">
+                        ${t.toFixed(2)}
+                    </td>
+                </tr>
+            `;
+        });
+
+        document.getElementById("trades").innerHTML = table;
+
+    } catch (err) {
+        console.log("Error:", err);
+    }
+}
+
+// AUTO REFRESH EVERY SECOND
+setInterval(updateUI, 1000);
+updateUI();
+
+</script>
+
+</body>
+</html>
