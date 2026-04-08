@@ -5,42 +5,70 @@ FEE = 0.001
 MIN_TRADE = 10
 RISK_PERCENT = 0.02
 
+
 def execute(action):
     price = state["price"]
 
-    # ❌ Max 2 trades
+    # =========================
+    # 🔒 SAFETY & LIMITS
+    # =========================
+
+    if price <= 0:
+        return
+
+    # max 2 open trades
     if len(state["positions"]) >= 2:
         return
 
-    # ❌ Cooldown (1 min)
-    if time.time() - state["last_trade_time"] < 60:
+    # cooldown (avoid spam trades)
+    if time.time() - state["last_trade_time"] < 30:
         return
 
-    # ❌ Daily trade limit
-    if state["daily_trades"] >= 20:
+    # daily limits
+    if state["daily_trades"] >= 40:
         return
 
-    # ❌ Daily loss limit (10%)
     if state["daily_loss"] > state["balance"] * 0.1:
         return
 
     balance = state["balance"]
+
     trade_amount = max(MIN_TRADE, balance * RISK_PERCENT)
 
     if trade_amount > balance:
         trade_amount = balance
 
-    # ✅ BUY
-    if action == "BUY" and balance >= MIN_TRADE:
+    # =========================
+    # 🧠 MARKET MODE
+    # =========================
 
-        sl = price * 0.98
-        tp = price * 1.04
+    mode = state.get("market_mode", "NORMAL")
+
+    # 🎯 DYNAMIC TP/SL (REALISTIC)
+    if mode == "SCALP":
+        tp = price * 1.003     # 0.3%
+        sl = price * 0.997     # 0.3%
+
+    elif mode == "TREND":
+        tp = price * 1.01      # 1%
+        sl = price * 0.995     # 0.5%
+
+    else:  # NORMAL
+        tp = price * 1.006     # 0.6%
+        sl = price * 0.995
+
+    # =========================
+    # 🟢 EXECUTE BUY
+    # =========================
+
+    if action == "BUY" and balance >= MIN_TRADE:
 
         position = {
             "entry": price,
             "amount": trade_amount,
             "sl": sl,
-            "tp": tp
+            "tp": tp,
+            "time": time.time()
         }
 
         state["positions"].append(position)
@@ -48,25 +76,66 @@ def execute(action):
         state["last_trade_time"] = time.time()
         state["daily_trades"] += 1
 
-    # 🔄 Manage trades
+    # =========================
+    # 🔄 MANAGE POSITIONS
+    # =========================
+
     for pos in state["positions"][:]:
 
-        # TRAILING STOP
-        if price > pos["entry"] * 1.02:
-            pos["sl"] = pos["entry"]
+        entry = pos["entry"]
+        amount = pos["amount"]
 
-        # STOP LOSS
+        # =====================
+        # 📈 TRAILING STOP
+        # =====================
+        if price > entry * 1.002:
+            pos["sl"] = max(pos["sl"], price * 0.998)
+
+        # =====================
+        # ⚡ QUICK SCALP EXIT
+        # =====================
+        if price > entry * 1.002:
+            profit = amount * 0.002
+            state["balance"] += amount + profit - profit * FEE
+            state["trades"].append(profit)
+            state["positions"].remove(pos)
+            continue
+
+        # =====================
+        # 📉 EARLY EXIT (MARKET FLIP)
+        # =====================
+        if state["signals"].get("trend") == "bearish":
+            state["balance"] += amount
+            state["trades"].append(0)
+            state["positions"].remove(pos)
+            continue
+
+        # =====================
+        # ⏱️ TIME-BASED EXIT
+        # =====================
+        if time.time() - pos["time"] > 300:  # 5 min
+            state["balance"] += amount
+            state["trades"].append(0)
+            state["positions"].remove(pos)
+            continue
+
+        # =====================
+        # 🔴 STOP LOSS
+        # =====================
         if price <= pos["sl"]:
-            loss = pos["amount"]
-            state["balance"] += pos["amount"] - loss * FEE
+            loss = amount * 0.003
+            state["balance"] += amount - loss
             state["trades"].append(-loss)
             state["daily_loss"] += loss
             state["positions"].remove(pos)
-            state["last_trade_time"] = time.time() + 120
+            state["last_trade_time"] = time.time() + 60
+            continue
 
-        # TAKE PROFIT
-        elif price >= pos["tp"]:
-            profit = pos["amount"] * 2
-            state["balance"] += pos["amount"] + profit - profit * FEE
+        # =====================
+        # 🟢 TAKE PROFIT
+        # =====================
+        if price >= pos["tp"]:
+            profit = amount * 0.005
+            state["balance"] += amount + profit - profit * FEE
             state["trades"].append(profit)
             state["positions"].remove(pos)
