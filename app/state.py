@@ -7,5 +7,10 @@ state = {
     "signals": {},
     "confidence": 0,
     "trend": "neutral",
-    "last_action": "NONE"
+    "last_action": "NONE",
+
+    # ✅ NEW
+    "last_trade_time": 0,
+    "daily_loss": 0,
+    "daily_trades": 0
 }
