@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import asyncio
@@ -19,31 +19,33 @@ app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 
-# Serve frontend
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
 
 @app.get("/")
 def serve_ui():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ✅ HEAD FIX (for UptimeRobot)
+
+# ✅ HEAD FIX (UptimeRobot)
 @app.head("/")
 def head_root():
     return {"status": "ok"}
+
 
 @app.head("/data")
 def head_data():
     return {"status": "ok"}
 
-# Price storage
+
 prices = []
 
-# 🚀 START BOT
+
 @app.on_event("startup")
 async def start():
     asyncio.create_task(main_loop())
 
-# 🔥 MAIN LOOP
+
 async def main_loop():
     asyncio.create_task(stream())
 
@@ -57,7 +59,6 @@ async def main_loop():
                 if len(prices) > 200:
                     prices.pop(0)
 
-                # wait for enough data
                 if len(prices) < 30:
                     await asyncio.sleep(1)
                     continue
@@ -78,22 +79,20 @@ async def main_loop():
                     "fvg": fvg(prices)
                 }
 
-                # ✅ AI DECISION
+                # 🧠 AI DECISION
                 action, confidence, mode = decide(signals)
 
-                # ✅ SAVE MODE (IMPORTANT FIX)
                 state["market_mode"] = mode
-
-                # ✅ EXECUTE TRADE
-                if action == "BUY":
-                execute(action)
-
-                state["last_action"] = action
-                # SAVE DATA
                 state["signals"] = signals
                 state["confidence"] = confidence
 
-                # 💰 LIVE PNL CALCULATION
+                # 🚀 EXECUTE TRADE (FIXED)
+                if action == "BUY":
+                    execute(action)
+
+                state["last_action"] = action
+
+                # 💰 LIVE PNL
                 pnl = 0
                 for pos in state["positions"]:
                     entry = pos["entry"]
@@ -112,13 +111,13 @@ async def main_loop():
 
         await asyncio.sleep(2)
 
-# 📊 API RESPONSE
+
 @app.get("/data")
 def get_data():
 
     def clean(obj):
         if isinstance(obj, float):
-            if obj != obj:  # NaN check
+            if obj != obj:
                 return 0
         return obj
 
