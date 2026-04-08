@@ -85,10 +85,10 @@ async def main_loop():
                 state["market_mode"] = mode
 
                 # ✅ EXECUTE TRADE
-                if action != state["last_action"]:
-                    execute(action)
-                    state["last_action"] = action
+                if action == "BUY":
+                execute(action)
 
+                state["last_action"] = action
                 # SAVE DATA
                 state["signals"] = signals
                 state["confidence"] = confidence
