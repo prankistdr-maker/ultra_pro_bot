@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import asyncio
 import pandas as pd
 import os
+import datetime
 
 from app.state import state
 from app.feed import stream
@@ -14,36 +15,37 @@ from app.execution import execute
 
 app = FastAPI()
 
-# 📁 Setup frontend path (IMPORTANT)
+# 📁 FRONTEND PATH FIX (IMPORTANT FOR RENDER)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 
-# Serve UI
+# Serve frontend
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 @app.get("/")
 def serve_ui():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# Store prices
+# ✅ FIX FOR UPTIMEROBOT (HEAD REQUEST SUPPORT)
+@app.head("/")
+def head_root():
+    return {"status": "ok"}
+
+@app.head("/data")
+def head_data():
+    return {"status": "ok"}
+
+# Store price history
 prices = []
 
-# 🚀 START BOT ON SERVER START
+# 🚀 START BOT
 @app.on_event("startup")
 async def start():
     asyncio.create_task(main_loop())
 
-# 🔥 MAIN LOOP (STABLE VERSION)
-import datetime
-
-# reset daily loss at midnight UTC
-if datetime.datetime.utcnow().hour == 0:
-    state["daily_loss"] = 0
-    state["daily_trades"] = 0
-
-
+# 🔥 MAIN BOT LOOP
 async def main_loop():
-    asyncio.create_task(stream())  # start websocket
+    asyncio.create_task(stream())
 
     while True:
         try:
@@ -52,25 +54,21 @@ async def main_loop():
             if price > 0:
                 prices.append(price)
 
-                # Keep last 200 prices
                 if len(prices) > 200:
                     prices.pop(0)
 
-                # Wait for enough data
+                # wait for enough data
                 if len(prices) < 30:
                     await asyncio.sleep(1)
                     continue
 
-                # DataFrame
                 df = pd.DataFrame(prices, columns=["close"])
                 df = compute(df)
 
-                # Safe RSI
                 rsi_val = df["rsi"].iloc[-1]
                 if pd.isna(rsi_val):
                     rsi_val = 50
 
-                # Signals
                 signals = {
                     "trend": "bullish" if df["ema50"].iloc[-1] > df["ema200"].iloc[-1] else "bearish",
                     "rsi": float(rsi_val),
@@ -80,24 +78,26 @@ async def main_loop():
                     "fvg": fvg(prices)
                 }
 
-                # Decision
                 action, confidence = decide(signals)
 
-                # Execute trade
                 if action != state["last_action"]:
                     execute(action)
                     state["last_action"] = action
 
-                # Save state
                 state["signals"] = signals
                 state["confidence"] = confidence
+
+            # ✅ RESET DAILY LIMITS
+            if datetime.datetime.utcnow().hour == 0:
+                state["daily_loss"] = 0
+                state["daily_trades"] = 0
 
         except Exception as e:
             print("BOT ERROR:", e)
 
-        await asyncio.sleep(2)  # avoid overload
+        await asyncio.sleep(2)
 
-# 📊 API (SAFE JSON)
+# 📊 SAFE DATA API
 @app.get("/data")
 def get_data():
 
