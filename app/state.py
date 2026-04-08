@@ -6,10 +6,9 @@ state = {
     "trades": [],
     "signals": {},
     "confidence": 0,
-    "trend": "neutral",
     "last_action": "NONE",
 
-    # ✅ NEW
+    "market_mode": "NORMAL",
     "last_trade_time": 0,
     "daily_loss": 0,
     "daily_trades": 0
