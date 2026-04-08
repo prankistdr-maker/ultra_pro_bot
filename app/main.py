@@ -34,6 +34,14 @@ async def start():
     asyncio.create_task(main_loop())
 
 # 🔥 MAIN LOOP (STABLE VERSION)
+import datetime
+
+# reset daily loss at midnight UTC
+if datetime.datetime.utcnow().hour == 0:
+    state["daily_loss"] = 0
+    state["daily_trades"] = 0
+
+
 async def main_loop():
     asyncio.create_task(stream())  # start websocket
 
