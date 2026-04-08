@@ -78,7 +78,9 @@ async def main_loop():
                     "fvg": fvg(prices)
                 }
 
-                action, confidence = decide(signals)
+                action, confidence, mode = decide(signals)
+
+state["market_mode"] = mode
 
                 if action != state["last_action"]:
                     execute(action)
