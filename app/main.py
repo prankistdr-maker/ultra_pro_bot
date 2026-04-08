@@ -15,7 +15,7 @@ from app.execution import execute
 
 app = FastAPI()
 
-# 📁 FRONTEND PATH FIX (IMPORTANT FOR RENDER)
+# 📁 FRONTEND PATH
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 
@@ -26,7 +26,7 @@ app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 def serve_ui():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
-# ✅ FIX FOR UPTIMEROBOT (HEAD REQUEST SUPPORT)
+# ✅ HEAD FIX (for UptimeRobot)
 @app.head("/")
 def head_root():
     return {"status": "ok"}
@@ -35,7 +35,7 @@ def head_root():
 def head_data():
     return {"status": "ok"}
 
-# Store price history
+# Price storage
 prices = []
 
 # 🚀 START BOT
@@ -43,7 +43,7 @@ prices = []
 async def start():
     asyncio.create_task(main_loop())
 
-# 🔥 MAIN BOT LOOP
+# 🔥 MAIN LOOP
 async def main_loop():
     asyncio.create_task(stream())
 
@@ -78,18 +78,31 @@ async def main_loop():
                     "fvg": fvg(prices)
                 }
 
+                # ✅ AI DECISION
                 action, confidence, mode = decide(signals)
 
-state["market_mode"] = mode
+                # ✅ SAVE MODE (IMPORTANT FIX)
+                state["market_mode"] = mode
 
+                # ✅ EXECUTE TRADE
                 if action != state["last_action"]:
                     execute(action)
                     state["last_action"] = action
 
+                # SAVE DATA
                 state["signals"] = signals
                 state["confidence"] = confidence
 
-            # ✅ RESET DAILY LIMITS
+                # 💰 LIVE PNL CALCULATION
+                pnl = 0
+                for pos in state["positions"]:
+                    entry = pos["entry"]
+                    amount = pos["amount"]
+                    pnl += (price - entry) / entry * amount
+
+                state["pnl"] = pnl
+
+            # 🔄 DAILY RESET
             if datetime.datetime.utcnow().hour == 0:
                 state["daily_loss"] = 0
                 state["daily_trades"] = 0
@@ -99,7 +112,7 @@ state["market_mode"] = mode
 
         await asyncio.sleep(2)
 
-# 📊 SAFE DATA API
+# 📊 API RESPONSE
 @app.get("/data")
 def get_data():
 
