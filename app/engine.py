@@ -16,11 +16,18 @@ def decide(signals):
     if signals["fvg"]:
         score += 1
 
-    if signals["rsi"] < 40:
+    if signals["rsi"] < 45:
         score += 1
 
-    # 🔥 LOWER threshold (important)
-    if score >= 4:
+    # ❌ Avoid sideways market
+    if signals["structure"] == "range":
+        return "HOLD", score
+
+    # ❌ Avoid bearish setups
+    if signals["trend"] == "bearish":
+        return "HOLD", score
+
+    if score >= 5:
         return "BUY", score
 
     return "HOLD", score
