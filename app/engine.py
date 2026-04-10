@@ -262,7 +262,7 @@ def decide(ind, smc, state):
     threshold = thresholds.get(mode, 7)
 
     # ─── DAILY LIMITS — STRICT ────────────────────────────
-    if state.get("daily_trades", 0) >= 8:  # Max 8 trades per day
+    if state.get("daily_trades", 0) >= 7:  # Max 8 trades per day
         return "HOLD", 0, mode, ["Daily limit: 8 trades reached"], sl_pct, tp_pct
 
     if state.get("daily_loss", 0) > state.get("balance", 1000) * 0.05:
