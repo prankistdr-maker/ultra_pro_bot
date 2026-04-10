@@ -185,9 +185,11 @@ def manage_positions():
 
         # Time exit — 45 min max
         elif time.time() - time_open > MAX_TIME:
-            exit_reason = "TIME"
-            exit_pnl    = raw_pnl - amount * FEE_RATE
-
+    # Only exit on time if we're profitable — otherwise wait for TP/SL
+    if raw_pnl > 0:
+        exit_reason = "TIME"
+        exit_pnl    = raw_pnl - amount * FEE_RATE
+    # If losing, let TP/SL handle it — don't lock in losses
         if exit_reason:
             _close(pos, exit_reason, exit_pnl, price)
 
