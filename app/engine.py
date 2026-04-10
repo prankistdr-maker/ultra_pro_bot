@@ -253,12 +253,12 @@ def decide(ind, smc, state):
 
     # ─── THRESHOLDS ───────────────────────────────────────
     # Higher threshold = fewer but better trades
-    thresholds = {
-        "TREND":    8,
-        "SCALP":    6,
-        "REVERSAL": 9,
-        "NORMAL":   7,
-    }
+   thresholds = {
+    "TREND":    9,
+    "SCALP":    99,   # Effectively disable SCALP mode
+    "REVERSAL": 9,
+    "NORMAL":   99,   # Disable NORMAL mode too — only TREND and REVERSAL
+}
     threshold = thresholds.get(mode, 7)
 
     # ─── DAILY LIMITS — STRICT ────────────────────────────
