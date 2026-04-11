@@ -15,7 +15,7 @@ from app.state import state, lock
 FEE_RATE  = 0.001    # 0.1% per side = 0.2% round trip
 MIN_TRADE = 20       # Minimum $20 per trade
 RISK_PCT  = 0.015    # Risk 1.5% of balance per trade
-MAX_TIME  = 5400     # 60 minutes max (was 45, increased for better TP hits)
+MAX_TIME  = 7200   # 60 minutes max (was 45, increased for better TP hits)
 
 
 def execute(action, sl_pct, tp_pct, confidence, reasons, mode):
