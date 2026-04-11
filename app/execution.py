@@ -219,6 +219,10 @@ def manage_positions():
                 exit_pnl    = raw_pnl - amount * FEE_RATE
             # else: let it run until TP or SL — don't force a loss
 
+        elif time.time() - time_open > 7200 and pnl_pct < -(sl_pct * 2):
+            exit_reason = "EMERGENCY"
+            exit_pnl    = raw_pnl - amount * FEE_RATE
+
         if exit_reason:
             _close(pos, exit_reason, exit_pnl, price)
 
