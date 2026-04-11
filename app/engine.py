@@ -357,7 +357,7 @@ def decide(ind, smc, state):
     threshold = thresholds.get(mode, 99)
 
     # ── DAILY LIMITS (protect capital) ──────────────
-    if state.get("daily_trades", 0) >= 4:
+    if state.get("daily_trades", 0) >= 30:
         return "HOLD", 0, mode, ["4 trades today — done for the day"], sl_pct, tp_pct
 
     if state.get("daily_loss", 0) > state.get("balance", 1000) * 0.04:
