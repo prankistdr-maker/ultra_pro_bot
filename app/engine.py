@@ -336,9 +336,10 @@ def decide(ind, smc, state):
     sl_pct = min(sl_pct, 1.2)
 
     if "TREND" in mode:
-        tp_pct = sl_pct * 3.5   # Trends run far
+        
+        tp_pct = sl_pct * 4.0   # Trends run far
     elif "REVERSAL" in mode:
-        tp_pct = sl_pct * 3.0   # Reversals are sharp
+        tp_pct = sl_pct * 3.5  # Reversals are sharp
     else:
         tp_pct = sl_pct * 2.5
 
