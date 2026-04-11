@@ -341,7 +341,7 @@ def decide(ind, smc, state):
     elif "REVERSAL" in mode:
         tp_pct = sl_pct * 3.5  # Reversals are sharp
     else:
-        tp_pct = sl_pct * 2.5
+        tp_pct = sl_pct * 3.0
 
     sl_pct = round(sl_pct, 2)
     tp_pct = round(tp_pct, 2)
