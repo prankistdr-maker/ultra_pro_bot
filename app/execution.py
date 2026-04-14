@@ -205,6 +205,9 @@ def _close(pos, reason, pnl, close_price):
         state["balance"] += amount + pnl
         if state["balance"] > state["peak_balance"]:
             state["peak_balance"] = state["balance"]
+            # Don't count open position deductions as drawdown
+        effective_balance = state["balance"] + sum(p["amount"] for p in state["positions"])
+        dd = (state["peak_balance"]-effective_balance)/state["peak_balance"]*100
         dd = (state["peak_balance"]-state["balance"])/state["peak_balance"]*100
         if dd > state["max_drawdown"]: state["max_drawdown"] = round(dd, 2)
         if pnl > 0:
