@@ -157,8 +157,8 @@ def calculate_targets(ind, smc, direction, price):
         tp_pct = round(abs(tp_price - price) / price * 100, 3)
 
     # Safety: SL not too tight (min 0.3%) or too wide (max 1.5%)
-    sl_pct = max(0.3, min(sl_pct, 1.5))
-    tp_pct = max(sl_pct * 2.5, tp_pct)
+    sl_pct = max(0.9, min(sl_pct, 1.5))
+    tp_pct = max(sl_pct * 4.5, tp_pct)
 
     return round(sl_price, 4), round(tp_price, 4), sl_pct, tp_pct
 
