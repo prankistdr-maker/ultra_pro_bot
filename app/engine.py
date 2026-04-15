@@ -50,6 +50,11 @@ def classify_market(ind, smc):
     premium    = smc.get("premium", False)
 
     # HIGHEST PRIORITY: CHoCH + OB/FVG in correct zone = institutional setup
+    trend_5m = ind.get("trend", "RANGING")
+    if trend_5m in ["STRONG_BULL", "BULL"] and htf_bias == "sell":
+        return "AVOID"
+    if trend_5m == "BEAR" and htf_bias == "buy":
+        return "AVOID"
     if choch_bull and high_buy and discount:
         return "CHOCH_BULL"   # Reversal confirmed by structure + entry level
     if choch_bear and high_sell and premium:
@@ -324,7 +329,7 @@ def hard_rules(ind, smc, direction):
             return False, "Not in discount zone"
 
     if direction == "SELL":
-        if trend == "STRONG_BULL" and ema_b and not choch:
+        if trend  in ["STRONG_BULL", "BULL"] and ema_b and not choch:
             return False, "STRONG_BULL aligned — no CHoCH"
         if rsi < 26:
             return False, f"RSI {rsi:.0f} — panic zone"
