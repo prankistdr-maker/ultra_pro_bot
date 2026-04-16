@@ -162,8 +162,8 @@ def calculate_targets(ind, smc, direction, price):
         tp_pct = round(abs(tp_price - price) / price * 100, 3)
 
     # Safety: SL not too tight (min 0.3%) or too wide (max 1.5%)
-    sl_pct = max(0.9, min(sl_pct, 1.5))
-    tp_pct = max(sl_pct * 4.5, tp_pct)
+    sl_pct = max(0.7, min(sl_pct, 1.2))
+    tp_pct = max(sl_pct * 9, tp_pct)
 
     return round(sl_price, 4), round(tp_price, 4), sl_pct, tp_pct
 
@@ -362,8 +362,8 @@ def decide(pair, ind, smc, balance, positions, daily_loss, daily_trades, last_tr
     # Daily limits — quality over quantity
     if daily_loss > balance * 0.04:
         return "HOLD", 0, mode, ["4% daily loss stop"], 0, 0, 0, 0
-    if daily_trades >= 6:
-        return "HOLD", 0, mode, ["6 trades today — quality limit"], 0, 0, 0, 0
+    if daily_trades >= 100:
+        return "HOLD", 0, mode, ["100 trade limit"], 0, 0, 0, 0
     pair_positions = [p for p in positions if p["pair"] == pair]
     if pair_positions:
         return "HOLD", 0, mode, ["Position open on this pair"], 0, 0, 0, 0
