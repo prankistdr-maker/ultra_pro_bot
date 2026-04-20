@@ -1,22 +1,9 @@
 """
-CLAUDE AI TRADING BRAIN
-========================
-Claude AI makes ALL trading decisions.
-No fixed algorithm. Claude receives:
-- Real price + candles (5m + 1H)
-- All technical indicators computed from real data
-- Fear & Greed index
-- Current market session
-- Account balance and open positions
-- Recent trade history
-
-Claude decides: BUY / SELL / HOLD
-With exact SL%, TP%, risk% and reasoning.
-
-This is adaptive, psychological, context-aware trading.
-Claude has deep knowledge of SMC, ICT, Wyckoff, liquidity,
-order blocks, FVG, CHoCH, BOS, premium/discount zones,
-market psychology, session analysis, news sentiment.
+CLAUDE AI TRADING BRAIN – PROFITABILITY OPTIMISED
+==================================================
+- Strict HTF bias first
+- Only trade during high‑volume sessions
+- Partial TP & advanced risk management
 """
 
 import os, json, time, datetime, requests
@@ -142,24 +129,25 @@ def compute_indicators(candles):
 
 def get_session():
     h = datetime.datetime.utcnow().hour
-    m = datetime.datetime.utcnow().minute
-    if 7  <= h < 10: return "LONDON OPEN (best time - institutions active)"
-    if 13 <= h < 16: return "NEW YORK OPEN (best time - high volume)"
-    if 10 <= h < 13: return "LONDON/NY OVERLAP (good volume)"
-    if 22 <= h or h < 7: return "ASIAN SESSION (low volume - be cautious)"
-    return "OFF-PEAK"
+    if 7  <= h < 10: return "LONDON_OPEN"
+    if 13 <= h < 16: return "NEW_YORK_OPEN"
+    if 10 <= h < 13: return "LONDON_NY_OVERLAP"
+    return "LOW_VOLUME"
 
 
 def ask_claude(pair, ind5m, ind1h, news, balance, positions, recent_trades):
     """
-    Send everything to Claude and let it decide.
-    Claude knows SMC, ICT, Wyckoff, psychology, news sentiment.
-    Claude adapts dynamically - not a fixed algorithm.
+    Claude now receives a **checklist** and must justify entry.
+    Only trades when 1H bias aligns with 5m signal.
     """
     if not CLAUDE_KEY:
-        return rule_based_fallback(ind5m, balance)
+        return rule_based_fallback(ind5m, ind1h, balance)
 
     session = get_session()
+    if session == "LOW_VOLUME":
+        # Skip AI call during low volume – save API cost
+        return {"action": "HOLD", "confidence": 1, "reasoning": "Low volume session", "setup_type": "WAIT"}
+
     fg = news.get("fg", 50)
     fg_label = news.get("fg_label", "neutral")
 
@@ -178,79 +166,63 @@ def ask_claude(pair, ind5m, ind1h, news, balance, positions, recent_trades):
     open_pos = [p for p in positions if p.get("pair") == pair]
     recent = recent_trades[-5:] if recent_trades else []
 
-    prompt = f"""You are an elite crypto trader with deep expertise in:
-- ICT (Inner Circle Trader) concepts: liquidity sweeps, order blocks, FVG, CHoCH, BOS
-- Wyckoff method: accumulation, distribution, spring, upthrust
-- Smart Money Concepts: premium/discount zones, equal highs/lows, displacement
-- Market psychology: FOMO, panic, stop hunts, retail traps
-- Session analysis: London/NY kill zones, Asian manipulation
+    # ─────────────────────────────────────────────────────────────────
+    # ENHANCED PROMPT – forces disciplined SMC entries
+    # ─────────────────────────────────────────────────────────────────
+    prompt = f"""You are an elite SMC/ICT trader. Your task is to find high‑probability trades with asymmetric risk:reward.
 
-You must make a REAL trading decision right now. Be adaptive, not algorithmic.
+**RULES YOU MUST FOLLOW:**
+1. First determine 1H bias: BULLISH only if 1H trend = STRONG_BULL or BULL, price above VWAP, and no bearish CHoCH.
+   BEARISH only if 1H trend = BEAR, price below VWAP, and no bullish CHoCH.
+   Otherwise bias = NEUTRAL → DO NOT TRADE.
+2. If bias is BULLISH, only consider BUY setups on 5m. If BEARISH, only SELL setups.
+3. A valid entry requires **at least two** of these confluences:
+   - Liquidity sweep (stop hunt) + bullish/bearish CHoCH (MSS)
+   - Order Block (OB) retest after displacement
+   - Fair Value Gap (FVG) fill in discount/premium zone
+   - Equal highs/lows sweep with volume spike
+4. Set SL beyond the recent swing high/low that would invalidate the idea.
+5. TP1 = 1:1 RR (move 50% to BE). TP2 = next liquidity level (min 2.5 RR).
+6. If confidence < 7, do NOT trade.
+
+**SESSION:** {session} – only trade if session is LONDON_OPEN or NEW_YORK_OPEN.
 
 ═══ MARKET DATA: {pair} ═══
 Session: {session}
-
-5-MINUTE CHART (entry timeframe):
 Price: ${ind5m.get('price', 0):,.4f}
-Trend: {ind5m.get('trend', '?')} | Zone: {ind5m.get('pd_zone','?')} ({ind5m.get('zone_pct',0)*100:.0f}% of range)
-EMA9: ${ind5m.get('ema9',0):,.2f} | EMA21: ${ind5m.get('ema21',0):,.2f} | EMA50: ${ind5m.get('ema50',0):,.2f}
-EMA Bull: {ind5m.get('ema_bull',False)} | Strong Bull: {ind5m.get('ema_strong_bull',False)}
-RSI: {ind5m.get('rsi',50)} | MACD: {ind5m.get('macd',0):.4f}
-ATR: {ind5m.get('atr_pct',0):.3f}% | VWAP: ${ind5m.get('vwap',0):,.2f} | Above VWAP: {ind5m.get('above_vwap',False)}
-Volume ratio: {ind5m.get('vol_ratio',1):.2f}x | High vol: {ind5m.get('high_volume',False)}
 
-SMC SIGNALS:
-Liquidity Sweep UP: {ind5m.get('liq_sweep_bull',False)} (price swept below prev low then recovered)
-Liquidity Sweep DOWN: {ind5m.get('liq_sweep_bear',False)} (price swept above prev high then fell)
+1‑HOUR BIAS CHECK:
+Trend: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)}
+Above VWAP: {ind1h.get('above_vwap',False)} | RSI: {ind1h.get('rsi',50)}
+CHoCH Bull: {ind1h.get('choch_bull',False)} | Bear: {ind1h.get('choch_bear',False)}
+Liq Sweep Bull: {ind1h.get('liq_sweep_bull',False)} | Bear: {ind1h.get('liq_sweep_bear',False)}
+
+5‑MINUTE ENTRY SIGNALS:
+Trend: {ind5m.get('trend', '?')} | Zone: {ind5m.get('pd_zone','?')}
+Liquidity Sweep UP: {ind5m.get('liq_sweep_bull',False)}
+Liquidity Sweep DOWN: {ind5m.get('liq_sweep_bear',False)}
 CHoCH Bull: {ind5m.get('choch_bull',False)} | CHoCH Bear: {ind5m.get('choch_bear',False)}
 FVG Bull: {ind5m.get('fvg_bull',False)} | FVG Bear: {ind5m.get('fvg_bear',False)}
 Order Block Bull: {ind5m.get('ob_bull',False)} | Order Block Bear: {ind5m.get('ob_bear',False)}
-Higher Highs: {ind5m.get('hh',False)} | Higher Lows: {ind5m.get('hl',False)}
-Lower Lows: {ind5m.get('ll',False)} | Lower Highs: {ind5m.get('lh',False)}
-Equal highs nearby: {ind5m.get('eq_highs_count',0)} | Equal lows nearby: {ind5m.get('eq_lows_count',0)}
+RSI: {ind5m.get('rsi',50)} | Volume ratio: {ind5m.get('vol_ratio',1):.2f}x
 Prev structure high: ${ind5m.get('prev_high',0):,.2f} | Prev low: ${ind5m.get('prev_low',0):,.2f}
 Swing high: ${ind5m.get('swing_high',0):,.2f} | Swing low: ${ind5m.get('swing_low',0):,.2f}
 
-1-HOUR CHART (bias timeframe):
-Trend: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)}
-RSI: {ind1h.get('rsi',50)} | Above VWAP: {ind1h.get('above_vwap',False)}
-CHoCH Bull: {ind1h.get('choch_bull',False)} | CHoCH Bear: {ind1h.get('choch_bear',False)}
-Liq Sweep Bull: {ind1h.get('liq_sweep_bull',False)} | Bear: {ind1h.get('liq_sweep_bear',False)}
+Fear & Greed: {fg}/100 ({fg_label}) – {sentiment_note}
 
-MARKET SENTIMENT:
-Fear & Greed Index: {fg}/100 ({fg_label})
-Interpretation: {sentiment_note}
+Balance: ${balance:.5f} | Open positions: {len(positions)} | This pair: {len(open_pos)}
 
-ACCOUNT:
-Balance: ${balance:.5f} | Starting: $20.00
-Open positions on this pair: {len(open_pos)} | Total positions: {len(positions)}
-Daily trades: 0 (no hard limit - trade when you see opportunity)
-
-RECENT TRADES (last 5):
-{json.dumps([{k: v for k,v in t.items() if k in ['dir','pnl','reason','pair']} for t in recent], indent=2) if recent else 'None yet - first trades'}
-
-═══ YOUR DECISION ═══
-Analyze this like a professional SMC trader would:
-1. What is the HTF (1H) bias?
-2. What is the 5m setup showing?
-3. Is there a liquidity sweep + CHoCH or OB/FVG confluence?
-4. Is price in correct premium/discount zone?
-5. What does market psychology suggest?
-6. What does Fear & Greed suggest?
-
-Consider: On a $20 account, even $0.50 profit is meaningful. Be willing to trade when you see GOOD setups.
-Do NOT require perfect conditions - real traders take 60-70% confidence trades.
-
-Respond ONLY with valid JSON:
+**YOUR DECISION (JSON only):**
 {{
   "action": "BUY" | "SELL" | "HOLD",
   "confidence": 1-10,
-  "sl_pct": 0.3-1.5,
-  "tp_pct": 0.9-5.0,
-  "risk_pct": 1-4,
-  "reasoning": "2-3 sentence explanation of WHY including SMC context",
-  "key_level": "the specific price level that invalidates this trade",
-  "setup_type": "e.g. Liquidity sweep + CHoCH, OB retest, FVG fill, BOS continuation"
+  "sl_pct": 0.5-1.5,
+  "tp1_pct": 0.9-2.5,
+  "tp2_pct": 2.5-5.0,
+  "risk_pct": 1.5-3,
+  "reasoning": "Concise: bias, entry signal, invalidation level",
+  "invalidation_price": number,
+  "setup_type": "e.g. Liq Sweep + CHoCH + OB"
 }}"""
 
     try:
@@ -272,50 +244,70 @@ Respond ONLY with valid JSON:
         start = text.find("{"); end = text.rfind("}") + 1
         decision = json.loads(text[start:end])
 
-        # Validate
+        # Validate and enforce minimum RR
         decision["action"] = decision.get("action", "HOLD").upper()
         if decision["action"] not in ["BUY", "SELL", "HOLD"]:
             decision["action"] = "HOLD"
         decision["confidence"]  = max(1, min(10, int(decision.get("confidence", 5))))
-        decision["sl_pct"]      = max(0.3, min(1.5,  float(decision.get("sl_pct", 0.7))))
-        decision["tp_pct"]      = max(0.9, min(5.0,  float(decision.get("tp_pct", 2.0))))
-        decision["risk_pct"]    = max(1.0, min(4.0,  float(decision.get("risk_pct", 2.0))))
+        decision["sl_pct"]      = max(0.5, min(1.5,  float(decision.get("sl_pct", 0.8))))
+        decision["tp1_pct"]     = max(0.9, min(2.5,  float(decision.get("tp1_pct", 1.5))))
+        decision["tp2_pct"]     = max(2.5, min(5.0,  float(decision.get("tp2_pct", 3.5))))
+        decision["risk_pct"]    = max(1.5, min(3.0,  float(decision.get("risk_pct", 2.0))))
 
-        # Enforce minimum R:R of 2.5
-        if decision["tp_pct"] < decision["sl_pct"] * 2.5:
-            decision["tp_pct"] = round(decision["sl_pct"] * 3.0, 2)
+        # Enforce minimum 2.5:1 overall RR (weighted by partial TP)
+        avg_tp = (decision["tp1_pct"] + decision["tp2_pct"]) / 2
+        if avg_tp < decision["sl_pct"] * 2.5:
+            decision["tp2_pct"] = round(decision["sl_pct"] * 3.5, 2)
 
         print(f"[CLAUDE] {pair} → {decision['action']} conf:{decision['confidence']}/10 | {decision.get('setup_type','')}")
         return decision
 
     except Exception as e:
         print(f"[CLAUDE] Error: {e}")
-        return rule_based_fallback(ind5m, balance)
+        return rule_based_fallback(ind5m, ind1h, balance)
 
 
-def rule_based_fallback(ind, balance):
-    """Simple fallback when Claude API unavailable"""
-    trend = ind.get("trend", "RANGING")
-    rsi   = ind.get("rsi", 50)
-    ema_b = ind.get("ema_bull", False)
-    liq_b = ind.get("liq_sweep_bull", False)
-    liq_br= ind.get("liq_sweep_bear", False)
-    choch_b = ind.get("choch_bull", False)
-    choch_br= ind.get("choch_bear", False)
-    atr   = max(ind.get("atr_pct", 0.3), 0.3)
+def rule_based_fallback(ind5m, ind1h, balance):
+    """Improved fallback – requires HTF alignment"""
+    # Determine 1H bias
+    trend_1h = ind1h.get("trend", "RANGING")
+    above_vwap_1h = ind1h.get("above_vwap", False)
+    choch_bull_1h = ind1h.get("choch_bull", False)
+    choch_bear_1h = ind1h.get("choch_bear", False)
 
-    sl = round(max(atr*1.5, 0.5), 2)
-    tp = round(sl * 3.0, 2)
+    bias = "NEUTRAL"
+    if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h:
+        bias = "BULLISH"
+    elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h:
+        bias = "BEARISH"
 
-    if (liq_b or choch_b) and trend in ["STRONG_BULL","BULL"] and rsi < 65:
-        return {"action":"BUY","confidence":7,"sl_pct":sl,"tp_pct":tp,
-                "risk_pct":2,"reasoning":"Rule: Liquidity sweep + bullish CHoCH in uptrend",
-                "key_level":str(ind.get("swing_low",0)),"setup_type":"Liq sweep + CHoCH"}
+    # 5m signals
+    liq_bull = ind5m.get("liq_sweep_bull", False)
+    liq_bear = ind5m.get("liq_sweep_bear", False)
+    choch_bull = ind5m.get("choch_bull", False)
+    choch_bear = ind5m.get("choch_bear", False)
+    fvg_bull = ind5m.get("fvg_bull", False)
+    fvg_bear = ind5m.get("fvg_bear", False)
+    ob_bull = ind5m.get("ob_bull", False)
+    ob_bear = ind5m.get("ob_bear", False)
+    atr_pct = max(ind5m.get("atr_pct", 0.5), 0.5)
 
-    if (liq_br or choch_br) and trend == "BEAR" and rsi > 35:
-        return {"action":"SELL","confidence":7,"sl_pct":sl,"tp_pct":tp,
-                "risk_pct":2,"reasoning":"Rule: Liquidity sweep + bearish CHoCH in downtrend",
-                "key_level":str(ind.get("swing_high",0)),"setup_type":"Liq sweep + CHoCH"}
+    sl = round(atr_pct * 1.8, 2)
+    tp1 = round(sl * 1.2, 2)
+    tp2 = round(sl * 3.5, 2)
 
-    return {"action":"HOLD","confidence":3,"sl_pct":sl,"tp_pct":tp,
-            "risk_pct":1,"reasoning":"No clear SMC setup - waiting","key_level":"N/A","setup_type":"WAIT"}
+    if bias == "BULLISH":
+        buy_signal = (liq_bull and choch_bull) or (ob_bull and fvg_bull)
+        if buy_signal and ind5m.get("rsi", 50) < 65:
+            return {"action":"BUY","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
+                    "risk_pct":2,"reasoning":"Fallback: HTF bullish + liq sweep/OB",
+                    "invalidation_price":ind5m.get("swing_low",0),"setup_type":"SMC Fallback"}
+    elif bias == "BEARISH":
+        sell_signal = (liq_bear and choch_bear) or (ob_bear and fvg_bear)
+        if sell_signal and ind5m.get("rsi", 50) > 35:
+            return {"action":"SELL","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
+                    "risk_pct":2,"reasoning":"Fallback: HTF bearish + liq sweep/OB",
+                    "invalidation_price":ind5m.get("swing_high",0),"setup_type":"SMC Fallback"}
+
+    return {"action":"HOLD","confidence":3,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
+            "risk_pct":1,"reasoning":"No HTF alignment","setup_type":"WAIT"}
