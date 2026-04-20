@@ -35,6 +35,33 @@ async def start():
     print(f"AdaptiveBot v7 — Claude AI Brain | Key: {'✓ active' if key else '✗ missing (rule-based fallback)'}")
 
 async def main_loop():
+
+    # Add inside main_loop, before trading logic:
+
+# Daily profit target – stop trading after +5%
+daily_pnl = state["balance"] - state["initial_balance"]
+if daily_pnl >= state["initial_balance"] * 0.05:
+    print(f"Daily profit target reached (+${daily_pnl:.2f}). Sleeping.")
+    await asyncio.sleep(60)
+    continue
+
+# Daily loss limit already present.
+
+# Session filter (re-check here even if Claude was called)
+session = get_session()
+if session == "LOW_VOLUME":
+    await asyncio.sleep(10)
+    continue
+
+# Minimum ATR filter
+atr_pct = ind5m.get("atr_pct", 0)
+if atr_pct < 0.25:
+    continue   # pair too dead
+
+# Cooldown after loss
+if recent_trades and recent_trades[0]["pnl"] < 0:
+    if time.time() - recent_trades[0]["time"] < 600:   # 10 min
+        continue
     for _ in range(30):
         with lock:
             if any(v>0 for v in state["prices"].values()): break
