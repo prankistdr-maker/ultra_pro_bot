@@ -1,3 +1,4 @@
+
 import time
 from datetime import datetime
 from app.state import state, lock
@@ -18,10 +19,11 @@ def execute(pair, decision, ind, price):
 
     action   = decision["action"]
     sl_pct   = decision["sl_pct"]
-    tp_pct   = decision["tp_pct"]
+    tp1_pct  = decision.get("tp1_pct", sl_pct*1.5)
+    tp2_pct  = decision.get("tp2_pct", sl_pct*3.0)
     risk_pct = decision["risk_pct"]
 
-    # Size: risk risk_pct% of balance
+    # Position sizing – risk % of balance
     risk_amt = balance * risk_pct / 100
     sl_dist  = price * sl_pct / 100
     size     = (risk_amt / sl_dist) * price if sl_dist > 0 else balance * 0.05
@@ -31,7 +33,8 @@ def execute(pair, decision, ind, price):
         return False
 
     sl_price = price*(1-sl_pct/100) if action=="BUY" else price*(1+sl_pct/100)
-    tp_price = price*(1+tp_pct/100) if action=="BUY" else price*(1-tp_pct/100)
+    tp1_price= price*(1+tp1_pct/100) if action=="BUY" else price*(1-tp1_pct/100)
+    tp2_price= price*(1+tp2_pct/100) if action=="BUY" else price*(1-tp2_pct/100)
 
     pos = {
         "id":         f"{pair[:3]}{int(time.time())}",
@@ -40,9 +43,12 @@ def execute(pair, decision, ind, price):
         "entry":      price,
         "amount":     size,
         "sl":         round(sl_price, 4),
-        "tp":         round(tp_price, 4),
+        "tp1":        round(tp1_price, 4),
+        "tp2":        round(tp2_price, 4),
+        "tp1_hit":    False,
+        "partial_closed": False,
         "sl_pct":     sl_pct,
-        "tp_pct":     tp_pct,
+        "tp_pct":     tp2_pct,          # for display
         "atr":        ind.get("atr", price*0.002),
         "peak":       price,
         "trail_on":   False,
@@ -62,9 +68,8 @@ def execute(pair, decision, ind, price):
         state["daily_trades"]         += 1
         state["total_trades"]         += 1
 
-    rr = round(tp_pct/sl_pct, 1)
-    print(f"[TRADE] {pair} {action} @${price:.4f} SL:{sl_pct}% TP:{tp_pct}% R:R={rr} size=${size:.4f}")
-    print(f"        Setup: {decision.get('setup_type','')} | {decision.get('reasoning','')[:80]}")
+    rr = round(tp2_pct/sl_pct, 1)
+    print(f"[TRADE] {pair} {action} @${price:.4f} SL:{sl_pct}% TP1:{tp1_pct}% TP2:{tp2_pct}% size=${size:.4f}")
     return True
 
 
@@ -83,7 +88,8 @@ def manage_positions():
         entry  = pos["entry"]
         amount = pos["amount"]
         sl     = pos["sl"]
-        tp     = pos["tp"]
+        tp1    = pos.get("tp1", entry)
+        tp2    = pos.get("tp2", entry)
         atr    = pos.get("atr", entry*0.002)
         peak   = pos.get("peak", entry)
         t_open = pos.get("time", time.time())
@@ -96,51 +102,84 @@ def manage_positions():
                 if p["id"] == pos["id"]:
                     p["pnl"] = round(raw_pnl, 5)
 
-        be    = pos.get("be_set", False)
-        trail = pos.get("trail_on", False)
+        # ─────────────────────────────────────────────────────────
+        # PARTIAL TAKE PROFIT at TP1 (50% of position)
+        # ─────────────────────────────────────────────────────────
+        if not pos.get("tp1_hit", False):
+            if (action=="BUY" and price >= tp1) or (action=="SELL" and price <= tp1):
+                # Close half the position
+                close_amt = amount * 0.5
+                close_pnl = (tp1 - entry)/entry * close_amt if action=="BUY" else (entry - tp1)/entry * close_amt
+                close_pnl -= close_amt * FEE
+                with lock:
+                    state["balance"] += close_amt + close_pnl
+                    for p in state["positions"]:
+                        if p["id"] == pos["id"]:
+                            p["amount"] -= close_amt
+                            p["tp1_hit"] = True
+                            p["partial_closed"] = True
+                            # Move SL to entry (breakeven)
+                            p["sl"] = entry
+                            p["be_set"] = True
+                amount -= close_amt
+                sl = entry
+                print(f"[PARTIAL TP] {pair} closed 50% at ${tp1:.4f} PnL:${close_pnl:+.5f}")
+                continue
 
-        # Breakeven after 0.5% profit
-        if not be and pnl_pct > 0.5:
+        # Breakeven after partial TP already set above; fallback for trades without partial
+        if not pos.get("be_set", False) and pnl_pct > 0.6:
             be_p = entry*(1+FEE*2.2) if action=="BUY" else entry*(1-FEE*2.2)
-            if (action=="BUY" and be_p>sl) or (action=="SELL" and be_p<sl):
+            if (action=="BUY" and be_p > sl) or (action=="SELL" and be_p < sl):
                 with lock:
                     for p in state["positions"]:
                         if p["id"]==pos["id"]:
-                            p["sl"] = round(be_p, 4); p["be_set"] = True
-                sl = be_p; be = True
+                            p["sl"] = round(be_p, 4)
+                            p["be_set"] = True
+                sl = be_p
 
-        # Trail after 0.4% profit — ATR distance
-        if not trail and pnl_pct > 0.4:
+        # Trailing stop – activates after 1.5x ATR in profit
+        trail_threshold = atr * 1.5
+        if not pos.get("trail_on", False) and pnl_pct > (trail_threshold/entry*100):
             with lock:
                 for p in state["positions"]:
-                    if p["id"]==pos["id"]: p["trail_on"] = True
-            trail = True
+                    if p["id"]==pos["id"]:
+                        p["trail_on"] = True
+        if pos.get("trail_on", False):
+            trail_dist = atr * 1.2
+            if action=="BUY" and price > peak:
+                new_sl = price - trail_dist
+                if new_sl > sl:
+                    with lock:
+                        for p in state["positions"]:
+                            if p["id"]==pos["id"]:
+                                p["sl"] = round(new_sl,4)
+                                p["peak"] = price
+                    sl = new_sl
+            elif action=="SELL" and price < peak:
+                new_sl = price + trail_dist
+                if new_sl < sl:
+                    with lock:
+                        for p in state["positions"]:
+                            if p["id"]==pos["id"]:
+                                p["sl"] = round(new_sl,4)
+                                p["peak"] = price
+                    sl = new_sl
 
-        if trail:
-            td = atr * 1.5
-            if action=="BUY" and price>peak:
-                ns = price-td
-                if ns>sl:
-                    with lock:
-                        for p in state["positions"]:
-                            if p["id"]==pos["id"]: p["sl"]=round(ns,4); p["peak"]=price
-                    sl=ns; peak=price
-            elif action=="SELL" and price<peak:
-                ns = price+td
-                if ns<sl:
-                    with lock:
-                        for p in state["positions"]:
-                            if p["id"]==pos["id"]: p["sl"]=round(ns,4); p["peak"]=price
-                    sl=ns; peak=price
+        # Emergency exit – retrace >70% of max profit
+        max_profit_pct = ((peak-entry)/entry*100) if action=="BUY" else ((entry-peak)/entry*100)
+        if max_profit_pct > 1.0 and pnl_pct < max_profit_pct * 0.3:
+            er = "RETRACE"
+            ep = raw_pnl - amount*FEE
+            _close(pos, er, ep, price)
+            continue
 
         # Exits
         er = None; ep = 0.0
-        if action=="BUY" and price>=tp:   er="TP"; ep=(tp-entry)/entry*amount-amount*FEE
-        elif action=="SELL" and price<=tp: er="TP"; ep=(entry-tp)/entry*amount-amount*FEE
-        elif action=="BUY" and price<=sl:  er="SL"; ep=(sl-entry)/entry*amount-amount*FEE
-        elif action=="SELL" and price>=sl: er="SL"; ep=(entry-sl)/entry*amount-amount*FEE
-        elif time.time()-t_open>7200 and raw_pnl>amount*FEE: er="TIME"; ep=raw_pnl-amount*FEE
-        elif time.time()-t_open>14400 and pnl_pct<-(pos["sl_pct"]*3): er="EMERGENCY"; ep=raw_pnl-amount*FEE
+        if action=="BUY" and price >= tp2:   er="TP2"; ep=(tp2-entry)/entry*amount-amount*FEE
+        elif action=="SELL" and price <= tp2: er="TP2"; ep=(entry-tp2)/entry*amount-amount*FEE
+        elif action=="BUY" and price <= sl:   er="SL"; ep=(sl-entry)/entry*amount-amount*FEE
+        elif action=="SELL" and price >= sl:  er="SL"; ep=(entry-sl)/entry*amount-amount*FEE
+        elif time.time()-t_open > 14400:      er="TIME"; ep=raw_pnl-amount*FEE
 
         if er:
             _close(pos, er, ep, price)
