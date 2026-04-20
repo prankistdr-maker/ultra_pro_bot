@@ -20,7 +20,7 @@ def execute(pair, action, sl_pct, tp_pct, sl_price, tp_price, conf, reasons, mod
     with lock:
         price = state["prices"][pair]; balance = state["balance"]; positions = state["positions"]
     if price<=0 or balance<2: return
-    if [p for p in positions if p["pair"]==pair] or len(positions)>=2: return
+    if [p for p in positions if p["pair"]==pair] or len(positions)>=7: return
     size = kelly_size(balance, sl_pct)
     if size > balance*0.9: return
     if sl_price<=0: sl_price = price*(1-sl_pct/100) if action=="BUY" else price*(1+sl_pct/100)
