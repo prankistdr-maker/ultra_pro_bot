@@ -7,7 +7,7 @@ from datetime import datetime
 
 from app.state import state, lock, PAIRS, STARTING_BALANCE
 from app.feed import stream
-from app.brain import compute_indicators, ask_claude
+from app.brain import compute_indicators, ask_claude, get_session
 from app.execution import execute, manage_positions, daily_reset
 
 app = FastAPI()
@@ -35,33 +35,6 @@ async def start():
     print(f"AdaptiveBot v7 — Claude AI Brain | Key: {'✓ active' if key else '✗ missing (rule-based fallback)'}")
 
 async def main_loop():
-
-    # Add inside main_loop, before trading logic:
-
-# Daily profit target – stop trading after +5%
-daily_pnl = state["balance"] - state["initial_balance"]
-if daily_pnl >= state["initial_balance"] * 0.05:
-    print(f"Daily profit target reached (+${daily_pnl:.2f}). Sleeping.")
-    await asyncio.sleep(60)
-    continue
-
-# Daily loss limit already present.
-
-# Session filter (re-check here even if Claude was called)
-session = get_session()
-if session == "LOW_VOLUME":
-    await asyncio.sleep(10)
-    continue
-
-# Minimum ATR filter
-atr_pct = ind5m.get("atr_pct", 0)
-if atr_pct < 0.25:
-    continue   # pair too dead
-
-# Cooldown after loss
-if recent_trades and recent_trades[0]["pnl"] < 0:
-    if time.time() - recent_trades[0]["time"] < 600:   # 10 min
-        continue
     for _ in range(30):
         with lock:
             if any(v>0 for v in state["prices"].values()): break
@@ -81,6 +54,20 @@ if recent_trades and recent_trades[0]["pnl"] < 0:
                 balance   = state["balance"]
                 positions = state["positions"][:]
                 daily_loss= state["daily_loss"]
+                recent_trades = state["trades"][:5]
+
+            # ─────────────────────────────────────────────────────
+            # DAILY PROFIT TARGET – stop after +5%
+            daily_pnl = balance - STARTING_BALANCE
+            if daily_pnl >= STARTING_BALANCE * 0.05:
+                print(f"Daily profit target reached (+${daily_pnl:.2f}). Sleeping.")
+                await asyncio.sleep(60)
+                continue
+
+            # Daily loss limit (3%) already handled by daily_loss check
+            if daily_loss > balance * 0.03:
+                await asyncio.sleep(10)
+                continue
 
             live_pnl = 0
             for pos in positions:
@@ -91,11 +78,6 @@ if recent_trades and recent_trades[0]["pnl"] < 0:
                     live_pnl += p
             with lock:
                 state["pnl"] = round(live_pnl, 5)
-
-            # Stop if 3% daily loss
-            if daily_loss > balance * 0.03:
-                await asyncio.sleep(10)
-                continue
 
             for pair in PAIRS:
                 now = time.time()
@@ -120,6 +102,23 @@ if recent_trades and recent_trades[0]["pnl"] < 0:
 
                 ind5m = compute_indicators(c5)
                 ind1h = compute_indicators(c1h) if len(c1h)>=20 else {}
+
+                # ─────────────────────────────────────────────────
+                # SESSION FILTER – only trade high‑volume windows
+                session = get_session()
+                if session == "LOW_VOLUME":
+                    continue
+
+                # MINIMUM ATR FILTER – avoid dead pairs
+                atr_pct = ind5m.get("atr_pct", 0)
+                if atr_pct < 0.25:
+                    continue
+
+                # COOLDOWN AFTER LOSS – prevent revenge trading
+                if recent_trades and recent_trades[0].get("pnl", 0) < 0:
+                    last_trade_time = recent_trades[0].get("time", 0)
+                    if now - last_trade_time < 600:  # 10 minutes
+                        continue
 
                 # Ask Claude AI
                 decision = ask_claude(pair, ind5m, ind1h, news, balance, positions, trades)
