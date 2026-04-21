@@ -31,4 +31,8 @@ state = {
     "feed_status": "connecting",
     "equity_curve": [{"t": "start", "v": STARTING_BALANCE}],
     "news": {"fg": 50, "fg_label": "neutral", "headlines": []},
+    # New: leverage and margin tracking
+    "margin_used": 0.0,
+    "max_leverage": 50,
+    "current_leverage": {p: 1 for p in PAIRS},
 }
