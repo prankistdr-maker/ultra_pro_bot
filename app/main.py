@@ -73,8 +73,8 @@ async def main_loop():
             for pos in positions:
                 pr = state["prices"].get(pos["pair"], 0)
                 if pr > 0:
-                    p = (pr-pos["entry"])/pos["entry"]*pos["amount"] if pos["action"]=="BUY" \
-                        else (pos["entry"]-pr)/pos["entry"]*pos["amount"]
+                    p = (pr-pos["entry"])/pos["entry"]*pos["notional"] if pos["action"]=="BUY" \
+                        else (pos["entry"]-pr)/pos["entry"]*pos["notional"]
                     live_pnl += p
             with lock:
                 state["pnl"] = round(live_pnl, 5)
@@ -117,8 +117,17 @@ async def main_loop():
                 # COOLDOWN AFTER LOSS – prevent revenge trading
                 if recent_trades and recent_trades[0].get("pnl", 0) < 0:
                     last_trade_time = recent_trades[0].get("time", 0)
-                    if now - last_trade_time < 600:  # 10 minutes
-                        continue
+                    if isinstance(last_trade_time, str):
+                        # convert time string to timestamp if needed (simple fallback)
+                        try:
+                            t = datetime.strptime(last_trade_time, "%H:%M:%S").time()
+                            now_t = datetime.now().time()
+                            # approximate diff
+                        except:
+                            pass
+                    else:
+                        if now - last_trade_time < 600:  # 10 minutes
+                            continue
 
                 # Ask Claude AI
                 decision = ask_claude(pair, ind5m, ind1h, news, balance, positions, trades)
