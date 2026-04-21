@@ -3,7 +3,7 @@ CLAUDE AI TRADING BRAIN – PROFITABILITY OPTIMISED
 ==================================================
 - Strict HTF bias first
 - Only trade during high‑volume sessions
-- Partial TP & advanced risk management
+- Dynamic leverage based on confidence & volatility
 """
 
 import os, json, time, datetime, requests
@@ -135,150 +135,110 @@ def get_session():
     return "LOW_VOLUME"
 
 
+def recommend_leverage(confidence, atr_pct, trend_strength):
+    """Dynamically adjust leverage based on confidence and volatility"""
+    base = 5
+    if confidence >= 9 and atr_pct > 0.5:
+        base = 15
+    elif confidence >= 8:
+        base = 10
+    elif confidence >= 7:
+        base = 7
+    else:
+        base = 5
+
+    # Reduce leverage in high volatility to avoid liquidation
+    if atr_pct > 2.0:
+        base = min(base, 3)
+    elif atr_pct > 1.0:
+        base = min(base, 5)
+
+    # Increase for strong trends
+    if trend_strength in ["STRONG_BULL", "BEAR"]:
+        base = min(base * 1.5, 20)
+    return int(min(base, 50))
+
+
 def ask_claude(pair, ind5m, ind1h, news, balance, positions, recent_trades):
-    """
-    Claude now receives a **checklist** and must justify entry.
-    Only trades when 1H bias aligns with 5m signal.
-    """
     if not CLAUDE_KEY:
         return rule_based_fallback(ind5m, ind1h, balance)
 
     session = get_session()
     if session == "LOW_VOLUME":
-        # Skip AI call during low volume – save API cost
         return {"action": "HOLD", "confidence": 1, "reasoning": "Low volume session", "setup_type": "WAIT"}
 
     fg = news.get("fg", 50)
     fg_label = news.get("fg_label", "neutral")
 
-    # Fear & Greed interpretation
-    if fg < 20:
-        sentiment_note = "EXTREME FEAR - contrarian BUY opportunity, institutions accumulating"
-    elif fg < 40:
-        sentiment_note = "FEAR - cautious, look for bounce setups"
-    elif fg > 80:
-        sentiment_note = "EXTREME GREED - contrarian SELL, distribution phase likely"
-    elif fg > 60:
-        sentiment_note = "GREED - caution on longs, look for short setups"
-    else:
-        sentiment_note = "NEUTRAL - trade technicals"
+    if fg < 20: sentiment_note = "EXTREME FEAR - contrarian BUY"
+    elif fg < 40: sentiment_note = "FEAR - cautious bounce"
+    elif fg > 80: sentiment_note = "EXTREME GREED - contrarian SELL"
+    elif fg > 60: sentiment_note = "GREED - caution longs"
+    else: sentiment_note = "NEUTRAL"
 
     open_pos = [p for p in positions if p.get("pair") == pair]
-    recent = recent_trades[-5:] if recent_trades else []
 
-    # ─────────────────────────────────────────────────────────────────
-    # ENHANCED PROMPT – forces disciplined SMC entries
-    # ─────────────────────────────────────────────────────────────────
-    prompt = f"""You are an elite SMC/ICT trader. Your task is to find high‑probability trades with asymmetric risk:reward.
+    prompt = f"""You are an elite SMC/ICT trader. Make a decision with strict rules.
 
-**RULES YOU MUST FOLLOW:**
-1. First determine 1H bias: BULLISH only if 1H trend = STRONG_BULL or BULL, price above VWAP, and no bearish CHoCH.
-   BEARISH only if 1H trend = BEAR, price below VWAP, and no bullish CHoCH.
-   Otherwise bias = NEUTRAL → DO NOT TRADE.
-2. If bias is BULLISH, only consider BUY setups on 5m. If BEARISH, only SELL setups.
-3. A valid entry requires **at least two** of these confluences:
-   - Liquidity sweep (stop hunt) + bullish/bearish CHoCH (MSS)
-   - Order Block (OB) retest after displacement
-   - Fair Value Gap (FVG) fill in discount/premium zone
-   - Equal highs/lows sweep with volume spike
-4. Set SL beyond the recent swing high/low that would invalidate the idea.
-5. TP1 = 1:1 RR (move 50% to BE). TP2 = next liquidity level (min 2.5 RR).
-6. If confidence < 7, do NOT trade.
+**RULES:**
+1. 1H bias: BULLISH if trend STRONG_BULL/BULL, above VWAP, no bearish CHoCH.
+   BEARISH if trend BEAR, below VWAP, no bullish CHoCH. Else NEUTRAL → HOLD.
+2. Only trade in direction of 1H bias.
+3. Entry requires at least 2 of: liq sweep + CHoCH, OB retest, FVG fill.
+4. Confidence below 7 → HOLD.
 
-**SESSION:** {session} – only trade if session is LONDON_OPEN or NEW_YORK_OPEN.
+SESSION: {session}
+1H BIAS: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)} | Above VWAP: {ind1h.get('above_vwap',False)}
+5M: LiqSweepBull: {ind5m.get('liq_sweep_bull',False)} | LiqSweepBear: {ind5m.get('liq_sweep_bear',False)}
+CHoCH Bull: {ind5m.get('choch_bull',False)} | Bear: {ind5m.get('choch_bear',False)}
+FVG Bull: {ind5m.get('fvg_bull',False)} | Bear: {ind5m.get('fvg_bear',False)}
+OB Bull: {ind5m.get('ob_bull',False)} | Bear: {ind5m.get('ob_bear',False)}
+RSI: {ind5m.get('rsi',50)} | ATR%: {ind5m.get('atr_pct',0)} | Price: ${ind5m.get('price',0):,.4f}
+Fear&Greed: {fg}/100 - {sentiment_note}
 
-═══ MARKET DATA: {pair} ═══
-Session: {session}
-Price: ${ind5m.get('price', 0):,.4f}
-
-1‑HOUR BIAS CHECK:
-Trend: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)}
-Above VWAP: {ind1h.get('above_vwap',False)} | RSI: {ind1h.get('rsi',50)}
-CHoCH Bull: {ind1h.get('choch_bull',False)} | Bear: {ind1h.get('choch_bear',False)}
-Liq Sweep Bull: {ind1h.get('liq_sweep_bull',False)} | Bear: {ind1h.get('liq_sweep_bear',False)}
-
-5‑MINUTE ENTRY SIGNALS:
-Trend: {ind5m.get('trend', '?')} | Zone: {ind5m.get('pd_zone','?')}
-Liquidity Sweep UP: {ind5m.get('liq_sweep_bull',False)}
-Liquidity Sweep DOWN: {ind5m.get('liq_sweep_bear',False)}
-CHoCH Bull: {ind5m.get('choch_bull',False)} | CHoCH Bear: {ind5m.get('choch_bear',False)}
-FVG Bull: {ind5m.get('fvg_bull',False)} | FVG Bear: {ind5m.get('fvg_bear',False)}
-Order Block Bull: {ind5m.get('ob_bull',False)} | Order Block Bear: {ind5m.get('ob_bear',False)}
-RSI: {ind5m.get('rsi',50)} | Volume ratio: {ind5m.get('vol_ratio',1):.2f}x
-Prev structure high: ${ind5m.get('prev_high',0):,.2f} | Prev low: ${ind5m.get('prev_low',0):,.2f}
-Swing high: ${ind5m.get('swing_high',0):,.2f} | Swing low: ${ind5m.get('swing_low',0):,.2f}
-
-Fear & Greed: {fg}/100 ({fg_label}) – {sentiment_note}
-
-Balance: ${balance:.5f} | Open positions: {len(positions)} | This pair: {len(open_pos)}
-
-**YOUR DECISION (JSON only):**
-{{
-  "action": "BUY" | "SELL" | "HOLD",
-  "confidence": 1-10,
-  "sl_pct": 0.5-1.5,
-  "tp1_pct": 0.9-2.5,
-  "tp2_pct": 2.5-5.0,
-  "risk_pct": 1.5-3,
-  "reasoning": "Concise: bias, entry signal, invalidation level",
-  "invalidation_price": number,
-  "setup_type": "e.g. Liq Sweep + CHoCH + OB"
-}}"""
+Return JSON:
+{{"action": "BUY"/"SELL"/"HOLD", "confidence": 1-10, "sl_pct": 0.5-1.5, "tp1_pct": 0.9-2.5, "tp2_pct": 2.5-5.0, "risk_pct": 1-3, "leverage": 1-50, "reasoning": "...", "setup_type": "..."}}"""
 
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": CLAUDE_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 400,
-                "messages": [{"role": "user", "content": prompt}]
-            },
+            headers={"x-api-key": CLAUDE_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400, "messages": [{"role": "user", "content": prompt}]},
             timeout=15
         )
         text = r.json()["content"][0]["text"]
         start = text.find("{"); end = text.rfind("}") + 1
         decision = json.loads(text[start:end])
-
-        # Validate and enforce minimum RR
         decision["action"] = decision.get("action", "HOLD").upper()
-        if decision["action"] not in ["BUY", "SELL", "HOLD"]:
-            decision["action"] = "HOLD"
-        decision["confidence"]  = max(1, min(10, int(decision.get("confidence", 5))))
-        decision["sl_pct"]      = max(0.5, min(1.5,  float(decision.get("sl_pct", 0.8))))
-        decision["tp1_pct"]     = max(0.9, min(2.5,  float(decision.get("tp1_pct", 1.5))))
-        decision["tp2_pct"]     = max(2.5, min(5.0,  float(decision.get("tp2_pct", 3.5))))
-        decision["risk_pct"]    = max(1.5, min(3.0,  float(decision.get("risk_pct", 2.0))))
-
-        # Enforce minimum 2.5:1 overall RR (weighted by partial TP)
+        decision["confidence"] = max(1, min(10, int(decision.get("confidence", 5))))
+        decision["sl_pct"] = max(0.5, min(1.5, float(decision.get("sl_pct", 0.8))))
+        decision["tp1_pct"] = max(0.9, min(2.5, float(decision.get("tp1_pct", 1.5))))
+        decision["tp2_pct"] = max(2.5, min(5.0, float(decision.get("tp2_pct", 3.5))))
+        decision["risk_pct"] = max(1.0, min(3.0, float(decision.get("risk_pct", 2.0))))
+        decision["leverage"] = max(1, min(50, int(decision.get("leverage", recommend_leverage(decision["confidence"], ind5m.get("atr_pct",0.5), ind1h.get("trend","RANGING")))))
         avg_tp = (decision["tp1_pct"] + decision["tp2_pct"]) / 2
         if avg_tp < decision["sl_pct"] * 2.5:
             decision["tp2_pct"] = round(decision["sl_pct"] * 3.5, 2)
-
-        print(f"[CLAUDE] {pair} → {decision['action']} conf:{decision['confidence']}/10 | {decision.get('setup_type','')}")
         return decision
-
     except Exception as e:
         print(f"[CLAUDE] Error: {e}")
         return rule_based_fallback(ind5m, ind1h, balance)
 
 
 def rule_based_fallback(ind5m, ind1h, balance):
-    """Improved fallback – requires HTF alignment"""
-    # Determine 1H bias
+    """Strict fallback — only trades when both 1H and 5m align perfectly"""
+    # 1H bias strict check
     trend_1h = ind1h.get("trend", "RANGING")
     above_vwap_1h = ind1h.get("above_vwap", False)
     choch_bull_1h = ind1h.get("choch_bull", False)
     choch_bear_1h = ind1h.get("choch_bear", False)
+    liq_bull_1h = ind1h.get("liq_sweep_bull", False)
+    liq_bear_1h = ind1h.get("liq_sweep_bear", False)
 
     bias = "NEUTRAL"
-    if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h:
+    if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h and not liq_bear_1h:
         bias = "BULLISH"
-    elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h:
+    elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h and not liq_bull_1h:
         bias = "BEARISH"
 
     # 5m signals
@@ -290,24 +250,32 @@ def rule_based_fallback(ind5m, ind1h, balance):
     fvg_bear = ind5m.get("fvg_bear", False)
     ob_bull = ind5m.get("ob_bull", False)
     ob_bear = ind5m.get("ob_bear", False)
+    zone = ind5m.get("pd_zone", "equilibrium")
+    rsi = ind5m.get("rsi", 50)
     atr_pct = max(ind5m.get("atr_pct", 0.5), 0.5)
 
-    sl = round(atr_pct * 1.8, 2)
-    tp1 = round(sl * 1.2, 2)
-    tp2 = round(sl * 3.5, 2)
-
+    # Only trade if 5m signal count >=2 and correct zone
     if bias == "BULLISH":
-        buy_signal = (liq_bull and choch_bull) or (ob_bull and fvg_bull)
-        if buy_signal and ind5m.get("rsi", 50) < 65:
+        signals = sum([liq_bull, choch_bull, fvg_bull, ob_bull])
+        correct_zone = zone in ["discount", "equilibrium"]
+        if signals >= 2 and correct_zone and rsi < 65 and atr_pct >= 0.25:
+            sl = round(atr_pct * 1.8, 2)
+            tp1 = round(sl * 1.2, 2)
+            tp2 = round(sl * 3.5, 2)
+            lev = recommend_leverage(7, atr_pct, trend_1h)
             return {"action":"BUY","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"reasoning":"Fallback: HTF bullish + liq sweep/OB",
+                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Strong bullish confluence",
                     "invalidation_price":ind5m.get("swing_low",0),"setup_type":"SMC Fallback"}
     elif bias == "BEARISH":
-        sell_signal = (liq_bear and choch_bear) or (ob_bear and fvg_bear)
-        if sell_signal and ind5m.get("rsi", 50) > 35:
+        signals = sum([liq_bear, choch_bear, fvg_bear, ob_bear])
+        correct_zone = zone in ["premium", "equilibrium"]
+        if signals >= 2 and correct_zone and rsi > 35 and atr_pct >= 0.25:
+            sl = round(atr_pct * 1.8, 2)
+            tp1 = round(sl * 1.2, 2)
+            tp2 = round(sl * 3.5, 2)
+            lev = recommend_leverage(7, atr_pct, trend_1h)
             return {"action":"SELL","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"reasoning":"Fallback: HTF bearish + liq sweep/OB",
+                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Strong bearish confluence",
                     "invalidation_price":ind5m.get("swing_high",0),"setup_type":"SMC Fallback"}
 
-    return {"action":"HOLD","confidence":3,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-            "risk_pct":1,"reasoning":"No HTF alignment","setup_type":"WAIT"}
+    return {"action":"HOLD","confidence":3,"reasoning":"No HTF alignment or insufficient signals","setup_type":"WAIT"}
