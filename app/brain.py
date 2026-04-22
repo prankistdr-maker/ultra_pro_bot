@@ -93,11 +93,9 @@ def compute_indicators(candles):
     eq_highs = [h for h in highs[-20:] if abs(h - highs[-1])/highs[-1] < 0.001]
     eq_lows  = [l for l in lows[-20:]  if abs(l - lows[-1])/lows[-1]   < 0.001]
 
-    # Recent swing points for SL placement
     recent_swing_low = min(lows[-5:]) if len(lows)>=5 else swing_low
     recent_swing_high = max(highs[-5:]) if len(highs)>=5 else swing_high
 
-    # Liquidity targets (previous day high/low approximation)
     liquidity_above = max(highs[-20:-5]) if len(highs)>=20 else swing_high
     liquidity_below = min(lows[-20:-5]) if len(lows)>=20 else swing_low
 
@@ -220,8 +218,8 @@ Return JSON with **exact prices**:
         decision["action"] = decision.get("action", "HOLD").upper()
         decision["confidence"] = max(1, min(10, int(decision.get("confidence", 5))))
         decision["risk_pct"] = max(1.0, min(3.0, float(decision.get("risk_pct", 2.0))))
-        decision["leverage"] = max(1, min(50, int(decision.get("leverage",
-            recommend_leverage(decision["confidence"], ind5m.get("atr_pct",0.5), ind1h.get("trend","RANGING")))))
+        rec_lev = recommend_leverage(decision["confidence"], ind5m.get("atr_pct",0.5), ind1h.get("trend","RANGING"))
+        decision["leverage"] = max(1, min(50, int(decision.get("leverage", rec_lev))))
         # Validate SL/TP prices
         price = ind5m["price"]
         if decision["action"] == "BUY":
@@ -268,7 +266,6 @@ def structure_based_fallback(ind5m, ind1h, balance):
     ob_bear = ind5m.get("ob_bear", False)
     zone = ind5m.get("pd_zone", "equilibrium")
     rsi = ind5m.get("rsi", 50)
-    atr = ind5m.get("atr", 0.002 * ind5m["price"])
     price = ind5m["price"]
     swing_low = ind5m["recent_swing_low"]
     swing_high = ind5m["recent_swing_high"]
