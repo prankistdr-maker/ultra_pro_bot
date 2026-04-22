@@ -1,9 +1,9 @@
 """
-CLAUDE AI TRADING BRAIN – PROFITABILITY OPTIMISED
+CLAUDE AI TRADING BRAIN – RELAXED FOR MORE TRADES
 ==================================================
-- Strict HTF bias first
-- Only trade during high‑volume sessions
-- Dynamic leverage based on confidence & volatility
+- Lower ATR threshold
+- Confidence 5+ trades
+- Fallback more lenient
 """
 
 import os, json, time, datetime, requests
@@ -129,7 +129,7 @@ def compute_indicators(candles):
 
 def get_session():
     h = datetime.datetime.utcnow().hour
-    if 7  <= h < 10: return "LONDON_OPEN"
+    if 7 <= h < 10: return "LONDON_OPEN"
     if 13 <= h < 16: return "NEW_YORK_OPEN"
     if 10 <= h < 13: return "LONDON_NY_OVERLAP"
     return "LOW_VOLUME"
@@ -144,16 +144,16 @@ def recommend_leverage(confidence, atr_pct, trend_strength):
         base = 10
     elif confidence >= 7:
         base = 7
-    else:
+    elif confidence >= 5:
         base = 5
+    else:
+        base = 3
 
-    # Reduce leverage in high volatility to avoid liquidation
     if atr_pct > 2.0:
         base = min(base, 3)
     elif atr_pct > 1.0:
         base = min(base, 5)
 
-    # Increase for strong trends
     if trend_strength in ["STRONG_BULL", "BEAR"]:
         base = min(base * 1.5, 20)
     return int(min(base, 50))
@@ -185,7 +185,7 @@ def ask_claude(pair, ind5m, ind1h, news, balance, positions, recent_trades):
    BEARISH if trend BEAR, below VWAP, no bullish CHoCH. Else NEUTRAL → HOLD.
 2. Only trade in direction of 1H bias.
 3. Entry requires at least 2 of: liq sweep + CHoCH, OB retest, FVG fill.
-4. Confidence below 7 → HOLD.
+4. Confidence below 5 → HOLD.
 
 SESSION: {session}
 1H BIAS: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)} | Above VWAP: {ind1h.get('above_vwap',False)}
@@ -219,6 +219,7 @@ Return JSON:
         avg_tp = (decision["tp1_pct"] + decision["tp2_pct"]) / 2
         if avg_tp < decision["sl_pct"] * 2.5:
             decision["tp2_pct"] = round(decision["sl_pct"] * 3.5, 2)
+        print(f"[CLAUDE] {pair} → {decision['action']} conf:{decision['confidence']}/10 | {decision.get('setup_type','')}")
         return decision
     except Exception as e:
         print(f"[CLAUDE] Error: {e}")
@@ -226,7 +227,7 @@ Return JSON:
 
 
 def rule_based_fallback(ind5m, ind1h, balance):
-    """Strict fallback — only trades when both 1H and 5m align perfectly"""
+    """Lenient fallback – trades with at least 1 strong signal and correct zone"""
     # 1H bias strict check
     trend_1h = ind1h.get("trend", "RANGING")
     above_vwap_1h = ind1h.get("above_vwap", False)
@@ -236,9 +237,9 @@ def rule_based_fallback(ind5m, ind1h, balance):
     liq_bear_1h = ind1h.get("liq_sweep_bear", False)
 
     bias = "NEUTRAL"
-    if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h and not liq_bear_1h:
+    if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h:
         bias = "BULLISH"
-    elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h and not liq_bull_1h:
+    elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h:
         bias = "BEARISH"
 
     # 5m signals
@@ -252,30 +253,31 @@ def rule_based_fallback(ind5m, ind1h, balance):
     ob_bear = ind5m.get("ob_bear", False)
     zone = ind5m.get("pd_zone", "equilibrium")
     rsi = ind5m.get("rsi", 50)
-    atr_pct = max(ind5m.get("atr_pct", 0.5), 0.5)
+    atr_pct = max(ind5m.get("atr_pct", 0.5), 0.1)
 
-    # Only trade if 5m signal count >=2 and correct zone
+    # Trade if bias matches and at least 1 signal + correct zone
     if bias == "BULLISH":
         signals = sum([liq_bull, choch_bull, fvg_bull, ob_bull])
         correct_zone = zone in ["discount", "equilibrium"]
-        if signals >= 2 and correct_zone and rsi < 65 and atr_pct >= 0.25:
+        if signals >= 1 and correct_zone and rsi < 70 and atr_pct >= 0.1:
             sl = round(atr_pct * 1.8, 2)
             tp1 = round(sl * 1.2, 2)
             tp2 = round(sl * 3.5, 2)
-            lev = recommend_leverage(7, atr_pct, trend_1h)
-            return {"action":"BUY","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Strong bullish confluence",
+            lev = recommend_leverage(6, atr_pct, trend_1h)
+            return {"action":"BUY","confidence":6,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
+                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Bullish bias + signal",
                     "invalidation_price":ind5m.get("swing_low",0),"setup_type":"SMC Fallback"}
     elif bias == "BEARISH":
         signals = sum([liq_bear, choch_bear, fvg_bear, ob_bear])
         correct_zone = zone in ["premium", "equilibrium"]
-        if signals >= 2 and correct_zone and rsi > 35 and atr_pct >= 0.25:
+        if signals >= 1 and correct_zone and rsi > 30 and atr_pct >= 0.1:
             sl = round(atr_pct * 1.8, 2)
             tp1 = round(sl * 1.2, 2)
             tp2 = round(sl * 3.5, 2)
-            lev = recommend_leverage(7, atr_pct, trend_1h)
-            return {"action":"SELL","confidence":7,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Strong bearish confluence",
+            lev = recommend_leverage(6, atr_pct, trend_1h)
+            return {"action":"SELL","confidence":6,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
+                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Bearish bias + signal",
                     "invalidation_price":ind5m.get("swing_high",0),"setup_type":"SMC Fallback"}
 
-    return {"action":"HOLD","confidence":3,"reasoning":"No HTF alignment or insufficient signals","setup_type":"WAIT"}
+    print(f"[FALLBACK] {bias} bias, signals:{signals}, zone:{zone}, atr:{atr_pct:.3f}% - HOLD")
+    return {"action":"HOLD","confidence":3,"reasoning":"No valid setup","setup_type":"WAIT"}
