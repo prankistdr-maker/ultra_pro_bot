@@ -1,12 +1,42 @@
+```python
+"""
+Execution - Dynamic Risk Scaling + Structure-Based SL/TP
+As account grows: risk% drops but absolute dollar profit grows.
+$20 account  → risk 20% ($4) → TP hit ~$0.90
+$100 account → risk 10% ($10) → TP hit ~$2.30
+$300 account → risk 5%  ($15) → TP hit ~$3.45
+"""
 import time
 from datetime import datetime
 from app.state import state, lock
 
 FEE = 0.001
 
+
+def get_dynamic_sizing(balance):
+    """
+    Dynamic risk scaling:
+    Small account = higher risk% for meaningful profits
+    Large account = lower risk% to protect capital
+    But absolute dollar risk (and profit) keeps growing
+    """
+    if balance < 25:
+        return 20.0, 10   # 20% risk, 10x max lev
+    elif balance < 50:
+        return 15.0, 8
+    elif balance < 100:
+        return 10.0, 6
+    elif balance < 200:
+        return 7.0, 5
+    elif balance < 500:
+        return 5.0, 4
+    else:
+        return 3.0, 3     # 3% risk, 3x max lev
+
+
 def execute(pair, decision, ind, price):
     with lock:
-        balance = state["balance"]
+        balance   = state["balance"]
         positions = state["positions"]
 
     if price <= 0 or balance < 2:
@@ -17,73 +47,86 @@ def execute(pair, decision, ind, price):
         return False
 
     action = decision["action"]
-    sl_pct = decision["sl_pct"]
-    tp1_pct = decision.get("tp1_pct", sl_pct*1.5)
-    tp2_pct = decision.get("tp2_pct", sl_pct*3.0)
-    risk_pct = decision["risk_pct"]
-    leverage = decision.get("leverage", 5)
 
-    # Position size with leverage
-    risk_amt = balance * risk_pct / 100
-    sl_dist = price * sl_pct / 100
-    # Notional size = risk_amt / (sl_dist/price) * leverage? Actually we want the loss to equal risk_amt if SL hit.
-    # With leverage, loss = (sl_dist/price) * notional. So notional = risk_amt / (sl_dist/price)
-    notional = risk_amt / (sl_dist / price) if sl_dist > 0 else balance * 0.05
-    # Margin required = notional / leverage
-    margin = notional / leverage
-    if margin > balance * 0.8:  # don't use more than 80% of balance as margin
-        leverage = max(1, int(notional / (balance * 0.8)))
-        margin = notional / leverage
-    if margin > balance:
-        return False
+    # Use exact price levels if provided (structure-based), otherwise fallback to percentages
+    if "sl_price" in decision:
+        sl_price = decision["sl_price"]
+        tp1_price = decision.get("tp1_price", price * 1.01 if action == "BUY" else price * 0.99)
+        tp2_price = decision.get("tp2_price", price * 1.02 if action == "BUY" else price * 0.98)
+        # Calculate percentages for logging
+        sl_pct = abs(price - sl_price) / price * 100
+        tp2_pct = abs(tp2_price - price) / price * 100
+    else:
+        # Legacy percentage mode (kept for compatibility)
+        sl_pct = decision["sl_pct"]
+        tp2_pct = decision.get("tp2_pct", sl_pct * 3.0)
+        sl_price = price * (1 - sl_pct / 100) if action == "BUY" else price * (1 + sl_pct / 100)
+        tp2_price = price * (1 + tp2_pct / 100) if action == "BUY" else price * (1 - tp2_pct / 100)
+        tp1_price = price * (1 + decision.get("tp1_pct", sl_pct * 1.5) / 100) if action == "BUY" else price * (1 - decision.get("tp1_pct", sl_pct * 1.5) / 100)
 
-    # Amount in base currency (e.g., BTC amount)
-    amount = notional / price
+    # DYNAMIC SIZING — overrides Claude's suggestion
+    risk_pct, max_lev = get_dynamic_sizing(balance)
+    leverage = max(1, min(max_lev, int(decision.get("leverage", max_lev))))
 
-    sl_price = price*(1-sl_pct/100) if action=="BUY" else price*(1+sl_pct/100)
-    tp1_price = price*(1+tp1_pct/100) if action=="BUY" else price*(1-tp1_pct/100)
-    tp2_price = price*(1+tp2_pct/100) if action=="BUY" else price*(1-tp2_pct/100)
-    liq_price = price*(1 - 0.9/leverage) if action=="BUY" else price*(1 + 0.9/leverage)  # rough est
+    # Margin = what we actually put in
+    margin = balance * risk_pct / 100
+    if margin > balance * 0.95:
+        margin = balance * 0.95
+
+    # Notional = leveraged position size
+    notional = margin * leverage
+
+    liq_price = price * (1 - 0.85 / leverage) if action == "BUY" else price * (1 + 0.85 / leverage)
+
+    # Expected profit/loss for display
+    exp_profit = notional * tp2_pct / 100 - notional * FEE if 'tp2_pct' in locals() else notional * abs(tp2_price - price) / price - notional * FEE
+    exp_loss   = notional * sl_pct / 100 + notional * FEE if 'sl_pct' in locals() else notional * abs(price - sl_price) / price + notional * FEE
 
     pos = {
-        "id": f"{pair[:3]}{int(time.time())}",
-        "pair": pair,
-        "action": action,
-        "entry": price,
-        "amount": amount,
-        "notional": notional,
-        "leverage": leverage,
-        "margin": margin,
-        "sl": round(sl_price, 4),
-        "tp1": round(tp1_price, 4),
-        "tp2": round(tp2_price, 4),
-        "liq": round(liq_price, 4),
-        "tp1_hit": False,
+        "id":             f"{pair[:3]}{int(time.time())}",
+        "pair":           pair,
+        "action":         action,
+        "entry":          price,
+        "amount":         notional / price,
+        "notional":       notional,
+        "leverage":       leverage,
+        "margin":         margin,
+        "sl":             round(sl_price, 4),
+        "tp1":            round(tp1_price, 4),
+        "tp2":            round(tp2_price, 4),
+        "liq":            round(liq_price, 4),
+        "tp1_hit":        False,
         "partial_closed": False,
-        "sl_pct": sl_pct,
-        "tp_pct": tp2_pct,
-        "atr": ind.get("atr", price*0.002),
-        "peak": price,
-        "trail_on": False,
-        "be_set": False,
-        "time": time.time(),
-        "time_str": datetime.now().strftime("%H:%M:%S"),
-        "reasoning": decision.get("reasoning", ""),
-        "setup_type": decision.get("setup_type", ""),
-        "confidence": decision.get("confidence", 5),
-        "pnl": 0.0,
+        "sl_pct":         round(sl_pct, 3) if 'sl_pct' in locals() else 0.0,
+        "tp_pct":         round(tp2_pct, 3) if 'tp2_pct' in locals() else 0.0,
+        "atr":            ind.get("atr", price * 0.002),
+        "peak":           price,
+        "trail_on":       False,
+        "be_set":         False,
+        "time":           time.time(),
+        "time_str":       datetime.now().strftime("%H:%M:%S"),
+        "reasoning":      decision.get("reasoning", ""),
+        "setup_type":     decision.get("setup_type", ""),
+        "confidence":     decision.get("confidence", 5),
+        "pnl":            0.0,
+        "exp_profit":     round(exp_profit, 4),
+        "exp_loss":       round(exp_loss, 4),
     }
 
     with lock:
         state["positions"].append(pos)
-        state["balance"] -= margin  # lock margin
-        state["margin_used"] += margin
+        state["balance"]              -= margin
+        state["margin_used"]          += margin
         state["last_trade_time"][pair] = time.time()
-        state["daily_trades"] += 1
-        state["total_trades"] += 1
+        state["daily_trades"]         += 1
+        state["total_trades"]         += 1
         state["current_leverage"][pair] = leverage
 
-    print(f"[TRADE] {pair} {action} @${price:.4f} | Lev:{leverage}x | Margin:${margin:.2f} | SL:{sl_pct}% TP1:{tp1_pct}% TP2:{tp2_pct}%")
+    rr = round(tp2_pct / sl_pct, 1) if 'sl_pct' in locals() and sl_pct > 0 else 0.0
+    print(f"[TRADE] {pair} {action} @${price:.4f} | {leverage}x | "
+          f"Margin:${margin:.3f} ({risk_pct:.0f}%) | Notional:${notional:.2f} | "
+          f"SL:${sl_price:.4f} TP2:${tp2_price:.4f} R:R={rr} | "
+          f"Est: +${exp_profit:.3f} / -${exp_loss:.3f}")
     return True
 
 
@@ -98,21 +141,19 @@ def manage_positions():
         if price <= 0:
             continue
 
-        action = pos["action"]
-        entry = pos["entry"]
-        amount = pos["amount"]
+        action   = pos["action"]
+        entry    = pos["entry"]
         notional = pos["notional"]
         leverage = pos["leverage"]
-        margin = pos["margin"]
-        sl = pos["sl"]
-        tp1 = pos.get("tp1", entry)
-        tp2 = pos.get("tp2", entry)
-        liq = pos.get("liq", 0)
-        atr = pos.get("atr", entry*0.002)
-        peak = pos.get("peak", entry)
-        t_open = pos.get("time", time.time())
+        margin   = pos["margin"]
+        sl       = pos["sl"]
+        tp1      = pos.get("tp1", entry)
+        tp2      = pos.get("tp2", entry)
+        liq      = pos.get("liq", 0)
+        atr      = pos.get("atr", entry * 0.002)
+        peak     = pos.get("peak", entry)
+        t_open   = pos.get("time", time.time())
 
-        # PnL (unrealized) with leverage
         if action == "BUY":
             pnl_abs = (price - entry) / entry * notional
         else:
@@ -124,7 +165,7 @@ def manage_positions():
                 if p["id"] == pos["id"]:
                     p["pnl"] = round(pnl_abs, 5)
 
-        # Liquidation check
+        # Liquidation
         if (action == "BUY" and price <= liq) or (action == "SELL" and price >= liq):
             _close(pos, "LIQUIDATED", -margin, price)
             continue
@@ -132,34 +173,30 @@ def manage_positions():
         # Partial TP at TP1
         if not pos.get("tp1_hit", False):
             if (action == "BUY" and price >= tp1) or (action == "SELL" and price <= tp1):
-                close_amt = amount * 0.5
-                close_notional = notional * 0.5
-                if action == "BUY":
-                    close_pnl = (tp1 - entry) / entry * close_notional
-                else:
-                    close_pnl = (entry - tp1) / entry * close_notional
-                close_pnl -= close_notional * FEE
+                c_notional = notional * 0.5
+                c_pnl = ((tp1 - entry) / entry * c_notional if action == "BUY"
+                         else (entry - tp1) / entry * c_notional)
+                c_pnl -= c_notional * FEE
+                half_margin = margin * 0.5
                 with lock:
-                    state["balance"] += margin * 0.5 + close_pnl  # return half margin + profit
-                    state["margin_used"] -= margin * 0.5
+                    state["balance"]     += half_margin + c_pnl
+                    state["margin_used"] = max(0, state["margin_used"] - half_margin)
                     for p in state["positions"]:
                         if p["id"] == pos["id"]:
-                            p["amount"] -= close_amt
-                            p["notional"] -= close_notional
-                            p["margin"] -= margin * 0.5
-                            p["tp1_hit"] = True
+                            p["notional"]      -= c_notional
+                            p["margin"]        -= half_margin
+                            p["tp1_hit"]        = True
                             p["partial_closed"] = True
-                            p["sl"] = entry  # move to breakeven
-                            p["be_set"] = True
-                amount -= close_amt
-                notional -= close_notional
-                margin -= margin * 0.5
-                sl = entry
-                print(f"[PARTIAL TP] {pair} closed 50% at ${tp1:.4f} PnL:${close_pnl:+.5f}")
+                            p["sl"]             = entry
+                            p["be_set"]         = True
+                notional -= c_notional
+                margin   -= half_margin
+                sl        = entry
+                print(f"[PARTIAL TP1] {pair} 50% @${tp1:.4f} +${c_pnl:.4f}")
                 continue
 
-        # Breakeven if not already
-        if not pos.get("be_set", False) and pnl_pct > 0.6 * leverage:
+        # Breakeven after leverage-adjusted profit
+        if not pos.get("be_set", False) and pnl_pct > 0.5 * leverage:
             be_p = entry * (1 + FEE * 2.2) if action == "BUY" else entry * (1 - FEE * 2.2)
             if (action == "BUY" and be_p > sl) or (action == "SELL" and be_p < sl):
                 with lock:
@@ -169,41 +206,44 @@ def manage_positions():
                             p["be_set"] = True
                 sl = be_p
 
-        # Trailing stop after 1.5x ATR profit (in % terms)
-        trail_threshold = atr * 1.5 / entry * 100 * leverage
-        if not pos.get("trail_on", False) and pnl_pct > trail_threshold:
+        # Trailing stop
+        if not pos.get("trail_on", False) and pnl_pct > atr / entry * 100 * leverage * 1.5:
             with lock:
                 for p in state["positions"]:
                     if p["id"] == pos["id"]:
                         p["trail_on"] = True
-        if pos.get("trail_on", False):
-            trail_dist = atr * 1.2
-            if action == "BUY" and price > peak:
-                new_sl = price - trail_dist
-                if new_sl > sl:
-                    with lock:
-                        for p in state["positions"]:
-                            if p["id"] == pos["id"]:
-                                p["sl"] = round(new_sl, 4)
-                                p["peak"] = price
-                    sl = new_sl
-            elif action == "SELL" and price < peak:
-                new_sl = price + trail_dist
-                if new_sl < sl:
-                    with lock:
-                        for p in state["positions"]:
-                            if p["id"] == pos["id"]:
-                                p["sl"] = round(new_sl, 4)
-                                p["peak"] = price
-                    sl = new_sl
 
-        # Emergency retrace exit
-        max_profit_pct = ((peak - entry) / entry * 100 * leverage) if action == "BUY" else ((entry - peak) / entry * 100 * leverage)
-        if max_profit_pct > 5.0 and pnl_pct < max_profit_pct * 0.3:
+        if pos.get("trail_on", False):
+            td = atr * 1.2
+            if action == "BUY" and price > peak:
+                ns = price - td
+                if ns > sl:
+                    with lock:
+                        for p in state["positions"]:
+                            if p["id"] == pos["id"]:
+                                p["sl"] = round(ns, 4)
+                                p["peak"] = price
+                    sl = ns
+                    peak = price
+            elif action == "SELL" and price < peak:
+                ns = price + td
+                if ns < sl:
+                    with lock:
+                        for p in state["positions"]:
+                            if p["id"] == pos["id"]:
+                                p["sl"] = round(ns, 4)
+                                p["peak"] = price
+                    sl = ns
+                    peak = price
+
+        # Retrace exit — only if profit was big (10%+ on margin) and gave back 70%
+        max_pnl_pct = ((peak - entry) / entry * 100 * leverage if action == "BUY"
+                       else (entry - peak) / entry * 100 * leverage)
+        if max_pnl_pct > 10.0 and pnl_pct < max_pnl_pct * 0.3:
             _close(pos, "RETRACE", pnl_abs - notional * FEE, price)
             continue
 
-        # TP2 / SL / Time exits
+        # Main exits
         er = None
         ep = 0.0
         if action == "BUY" and price >= tp2:
@@ -227,42 +267,63 @@ def manage_positions():
 
 
 def _close(pos, reason, pnl, cp):
-    margin = pos["margin"]
-    amount = pos.get("notional", pos["amount"] * pos["entry"])
+    margin   = pos["margin"]
+    notional = pos.get("notional", pos["amount"] * pos["entry"])
+    rec = {
+        "id":         pos["id"],
+        "pair":       pos["pair"],
+        "action":     pos["action"],
+        "entry":      pos["entry"],
+        "exit":       cp,
+        "amount":     round(notional, 5),
+        "pnl":        round(pnl, 5),
+        "pnl_pct":    round(pnl / margin * 100, 2) if margin > 0 else 0,
+        "reason":     reason,
+        "setup_type": pos.get("setup_type", ""),
+        "reasoning":  pos.get("reasoning", ""),
+        "confidence": pos.get("confidence", 5),
+        "leverage":   pos.get("leverage", 1),
+        "margin":     round(margin, 4),
+        "duration":   round((time.time() - pos["time"]) / 60, 1),
+        "time":       pos.get("time_str", ""),
+        "exit_time":  datetime.now().strftime("%H:%M:%S"),
+        "won":        pnl > 0,
+    }
     with lock:
-        # Return remaining margin + PnL
         state["balance"] += margin + pnl
-        state["margin_used"] -= margin
+        state["margin_used"] = max(0, state["margin_used"] - margin)
+
         if state["balance"] > state["peak_balance"]:
             state["peak_balance"] = state["balance"]
-        # Update stats
+        open_margin = sum(p["margin"] for p in state["positions"]
+                         if p["id"] != pos["id"])
+        eff = state["balance"] + open_margin
+        dd  = max(0, (state["peak_balance"] - eff) / state["peak_balance"] * 100)
+        if dd > state["max_drawdown"]:
+            state["max_drawdown"] = round(dd, 2)
+
         if pnl > 0:
             state["winning_trades"] += 1
             state["daily_wins"] += 1
         else:
             state["losing_trades"] += 1
             state["daily_loss"] += abs(pnl)
+
         state["total_pnl"] = state["balance"] - state["initial_balance"]
-        # Record trade
-        rec = {
-            "id": pos["id"], "pair": pos["pair"], "action": pos["action"],
-            "entry": pos["entry"], "exit": cp, "amount": round(amount, 5),
-            "pnl": round(pnl, 5), "pnl_pct": round(pnl / margin * 100, 2) if margin > 0 else 0,
-            "reason": reason, "setup_type": pos.get("setup_type", ""),
-            "reasoning": pos.get("reasoning", ""), "confidence": pos.get("confidence", 5),
-            "leverage": pos.get("leverage", 1), "duration": round((time.time() - pos["time"]) / 60, 1),
-            "time": pos.get("time_str", ""), "exit_time": datetime.now().strftime("%H:%M:%S"),
-            "won": pnl > 0,
-        }
         state["trades"].insert(0, rec)
         if len(state["trades"]) > 200:
             state["trades"].pop()
         state["positions"] = [p for p in state["positions"] if p["id"] != pos["id"]]
-        state["equity_curve"].append({"t": datetime.now().strftime("%H:%M"), "v": round(state["balance"], 5)})
+        state["equity_curve"].append({
+            "t": datetime.now().strftime("%H:%M"),
+            "v": round(state["balance"], 5)
+        })
         if len(state["equity_curve"]) > 300:
             state["equity_curve"].pop(1)
+
     emoji = "✅" if pnl > 0 else "❌"
-    print(f"{emoji} [{reason}] {pos['pair']} {pos['action']} @${cp:.4f} PnL:${pnl:+.5f} ({rec['pnl_pct']:+.1f}%) {rec['duration']}min")
+    print(f"{emoji} [{reason}] {pos['pair']} {pos['action']} @${cp:.4f} "
+          f"PnL:${pnl:+.5f} ({rec['pnl_pct']:+.1f}%) {rec['duration']}min lev:{pos.get('leverage',1)}x")
 
 
 def daily_reset():
@@ -276,3 +337,4 @@ def daily_reset():
             state["daily_reset_hour"] = 0
         elif h != 0:
             state["daily_reset_hour"] = h
+```
