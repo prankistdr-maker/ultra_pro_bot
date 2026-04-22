@@ -1,4 +1,3 @@
-```python
 """
 Execution - Dynamic Risk Scaling + Structure-Based SL/TP
 As account grows: risk% drops but absolute dollar profit grows.
@@ -337,4 +336,3 @@ def daily_reset():
             state["daily_reset_hour"] = 0
         elif h != 0:
             state["daily_reset_hour"] = h
-```
