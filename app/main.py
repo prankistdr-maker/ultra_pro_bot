@@ -56,16 +56,16 @@ async def main_loop():
                 daily_loss= state["daily_loss"]
                 recent_trades = state["trades"][:5]
 
-            # ─────────────────────────────────────────────────────
-            # DAILY PROFIT TARGET – stop after +5%
+            # Daily profit target – stop after +5%
             daily_pnl = balance - STARTING_BALANCE
             if daily_pnl >= STARTING_BALANCE * 0.05:
                 print(f"Daily profit target reached (+${daily_pnl:.2f}). Sleeping.")
                 await asyncio.sleep(60)
                 continue
 
-            # Daily loss limit (3%) already handled by daily_loss check
+            # Daily loss limit (3%)
             if daily_loss > balance * 0.03:
+                print(f"Daily loss limit hit (${daily_loss:.2f}). Sleeping.")
                 await asyncio.sleep(10)
                 continue
 
@@ -103,30 +103,24 @@ async def main_loop():
                 ind5m = compute_indicators(c5)
                 ind1h = compute_indicators(c1h) if len(c1h)>=20 else {}
 
-                # ─────────────────────────────────────────────────
-                # SESSION FILTER – only trade high‑volume windows
+                # Session filter – only trade high‑volume windows
                 session = get_session()
                 if session == "LOW_VOLUME":
+                    # print(f"[SESSION] {pair} skipped - low volume")
                     continue
 
-                # MINIMUM ATR FILTER – avoid dead pairs
+                # Minimum ATR filter – relaxed to 0.1%
                 atr_pct = ind5m.get("atr_pct", 0)
-                if atr_pct < 0.25:
+                if atr_pct < 0.1:
+                    # print(f"[ATR] {pair} skipped - atr {atr_pct:.3f}% too low")
                     continue
 
-                # COOLDOWN AFTER LOSS – prevent revenge trading
-                if recent_trades and recent_trades[0].get("pnl", 0) < 0:
-                    last_trade_time = recent_trades[0].get("time", 0)
-                    if isinstance(last_trade_time, str):
-                        # convert time string to timestamp if needed (simple fallback)
-                        try:
-                            t = datetime.strptime(last_trade_time, "%H:%M:%S").time()
-                            now_t = datetime.now().time()
-                            # approximate diff
-                        except:
-                            pass
-                    else:
-                        if now - last_trade_time < 600:  # 10 minutes
+                # Cooldown after loss – only if there's a recent losing trade
+                if recent_trades:
+                    last_trade = recent_trades[0]
+                    if last_trade.get("pnl", 0) < 0:
+                        last_time = last_trade.get("time")
+                        if isinstance(last_time, (int, float)) and now - last_time < 600:
                             continue
 
                 # Ask Claude AI
@@ -139,9 +133,10 @@ async def main_loop():
 
                 last_claude_call[pair] = now
 
-                # Execute if Claude says trade
-                if decision["action"] in ["BUY","SELL"] and decision["confidence"] >= 6:
+                # Execute if confidence >= 5 (was 6)
+                if decision["action"] in ["BUY","SELL"] and decision["confidence"] >= 5:
                     if not pair_positions and len(positions) < 3:
+                        print(f"[SIGNAL] {pair} {decision['action']} conf:{decision['confidence']}/10")
                         executed = execute(pair, decision, ind5m, price)
                         if executed:
                             with lock:
