@@ -1,9 +1,9 @@
 """
-CLAUDE AI TRADING BRAIN – RELAXED FOR MORE TRADES
-==================================================
-- Lower ATR threshold
-- Confidence 5+ trades
-- Fallback more lenient
+CLAUDE AI TRADING BRAIN – STRUCTURE-BASED SL/TP
+================================================
+- SL at swing points / order blocks
+- TP at liquidity pools (equal highs/lows, previous day levels)
+- Claude receives full structure context
 """
 
 import os, json, time, datetime, requests
@@ -29,56 +29,45 @@ def compute_indicators(candles):
         for v in vals[p:]: r = v*k + r*(1-k)
         return r
 
-    # EMAs
     e9  = ema(closes, 9)
     e21 = ema(closes, 21)
     e50 = ema(closes, 50) if len(closes) >= 50 else closes[-1]
 
-    # RSI
     gains = [max(closes[i]-closes[i-1],0) for i in range(1,len(closes))]
     losses= [max(closes[i-1]-closes[i],0) for i in range(1,len(closes))]
     ag = sum(gains[-14:])/14; al = sum(losses[-14:])/14
     rsi = round(100-(100/(1+ag/al)),1) if al > 0 else 100
 
-    # MACD
     e12 = ema(closes, 12); e26 = ema(closes, 26)
     macd = round(e12 - e26, 4)
 
-    # ATR
     trs = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]),
                abs(lows[i]-closes[i-1])) for i in range(1,len(candles))]
     atr = round(sum(trs[-14:])/14, 4)
     atr_pct = round(atr/price*100, 3)
 
-    # VWAP
     typical = [(highs[i]+lows[i]+closes[i])/3 for i in range(len(candles))]
     vol_sum = sum(vols)
     vwap = round(sum(t*v for t,v in zip(typical,vols))/vol_sum, 2) if vol_sum > 0 else price
 
-    # Volume
     avg_vol = sum(vols[-20:])/20
     vol_ratio = round(vols[-1]/avg_vol, 2) if avg_vol > 0 else 1
 
-    # Swing points (last 20 candles)
     swing_high = round(max(highs[-20:]), 2)
     swing_low  = round(min(lows[-20:]),  2)
 
-    # Liquidity sweep detection
     prev_high = max(highs[-20:-3])
     prev_low  = min(lows[-20:-3])
     liq_sweep_bull = lows[-1] < prev_low and closes[-1] > prev_low and closes[-1] > closes[-2]
     liq_sweep_bear = highs[-1] > prev_high and closes[-1] < prev_high and closes[-1] < closes[-2]
 
-    # CHoCH
     sh = max(highs[-8:-2]); sl_lvl = min(lows[-8:-2])
     choch_bull = closes[-1] > sh and closes[-2] <= sh
     choch_bear = closes[-1] < sl_lvl and closes[-2] >= sl_lvl
 
-    # FVG
     fvg_bull = len(candles)>=3 and lows[-1] > highs[-3]
     fvg_bear = len(candles)>=3 and highs[-1] < lows[-3]
 
-    # OB (last bearish before bullish impulse)
     ob_bull = ob_bear = False
     for i in range(len(candles)-5, len(candles)-2):
         if i < 1: continue
@@ -87,7 +76,6 @@ def compute_indicators(candles):
         if closes[i] > candles[i]["o"] and closes[i+1] < closes[i]:
             ob_bear = True
 
-    # Structure
     hh = max(highs[-3:]) > max(highs[-6:-3]) if len(highs)>=6 else False
     hl = min(lows[-3:])  > min(lows[-6:-3])  if len(lows)>=6  else False
     ll = min(lows[-3:])  < min(lows[-6:-3])  if len(lows)>=6  else False
@@ -98,14 +86,20 @@ def compute_indicators(candles):
     elif e9 > e21:  trend = "BULL"
     else:           trend = "RANGING"
 
-    # Premium/Discount zone
     rng = swing_high - swing_low
     zone_pct = round((price - swing_low)/rng, 2) if rng > 0 else 0.5
     pd_zone = "discount" if zone_pct < 0.45 else ("premium" if zone_pct > 0.55 else "equilibrium")
 
-    # Equal highs/lows (liquidity pools)
     eq_highs = [h for h in highs[-20:] if abs(h - highs[-1])/highs[-1] < 0.001]
     eq_lows  = [l for l in lows[-20:]  if abs(l - lows[-1])/lows[-1]   < 0.001]
+
+    # Recent swing points for SL placement
+    recent_swing_low = min(lows[-5:]) if len(lows)>=5 else swing_low
+    recent_swing_high = max(highs[-5:]) if len(highs)>=5 else swing_high
+
+    # Liquidity targets (previous day high/low approximation)
+    liquidity_above = max(highs[-20:-5]) if len(highs)>=20 else swing_high
+    liquidity_below = min(lows[-20:-5]) if len(lows)>=20 else swing_low
 
     return {
         "price": round(price, 4),
@@ -115,6 +109,10 @@ def compute_indicators(candles):
         "vwap": vwap, "above_vwap": price > vwap,
         "vol_ratio": vol_ratio, "high_volume": vol_ratio > 1.5,
         "swing_high": swing_high, "swing_low": swing_low,
+        "recent_swing_low": round(recent_swing_low,2),
+        "recent_swing_high": round(recent_swing_high,2),
+        "liquidity_above": round(liquidity_above,2),
+        "liquidity_below": round(liquidity_below,2),
         "liq_sweep_bull": liq_sweep_bull, "liq_sweep_bear": liq_sweep_bear,
         "choch_bull": choch_bull, "choch_bear": choch_bear,
         "fvg_bull": fvg_bull, "fvg_bear": fvg_bear,
@@ -136,24 +134,14 @@ def get_session():
 
 
 def recommend_leverage(confidence, atr_pct, trend_strength):
-    """Dynamically adjust leverage based on confidence and volatility"""
     base = 5
-    if confidence >= 9 and atr_pct > 0.5:
-        base = 15
-    elif confidence >= 8:
-        base = 10
-    elif confidence >= 7:
-        base = 7
-    elif confidence >= 5:
-        base = 5
-    else:
-        base = 3
-
-    if atr_pct > 2.0:
-        base = min(base, 3)
-    elif atr_pct > 1.0:
-        base = min(base, 5)
-
+    if confidence >= 9 and atr_pct > 0.5: base = 15
+    elif confidence >= 8: base = 10
+    elif confidence >= 7: base = 7
+    elif confidence >= 5: base = 5
+    else: base = 3
+    if atr_pct > 2.0: base = min(base, 3)
+    elif atr_pct > 1.0: base = min(base, 5)
     if trend_strength in ["STRONG_BULL", "BEAR"]:
         base = min(base * 1.5, 20)
     return int(min(base, 50))
@@ -161,49 +149,69 @@ def recommend_leverage(confidence, atr_pct, trend_strength):
 
 def ask_claude(pair, ind5m, ind1h, news, balance, positions, recent_trades):
     if not CLAUDE_KEY:
-        return rule_based_fallback(ind5m, ind1h, balance)
+        return structure_based_fallback(ind5m, ind1h, balance)
 
     session = get_session()
     if session == "LOW_VOLUME":
         return {"action": "HOLD", "confidence": 1, "reasoning": "Low volume session", "setup_type": "WAIT"}
 
     fg = news.get("fg", 50)
-    fg_label = news.get("fg_label", "neutral")
-
     if fg < 20: sentiment_note = "EXTREME FEAR - contrarian BUY"
     elif fg < 40: sentiment_note = "FEAR - cautious bounce"
     elif fg > 80: sentiment_note = "EXTREME GREED - contrarian SELL"
     elif fg > 60: sentiment_note = "GREED - caution longs"
     else: sentiment_note = "NEUTRAL"
 
-    open_pos = [p for p in positions if p.get("pair") == pair]
-
-    prompt = f"""You are an elite SMC/ICT trader. Make a decision with strict rules.
+    prompt = f"""You are an elite SMC/ICT trader. Make a trading decision using **structure-based levels**, not fixed percentages.
 
 **RULES:**
-1. 1H bias: BULLISH if trend STRONG_BULL/BULL, above VWAP, no bearish CHoCH.
+1. Determine 1H bias: BULLISH if trend STRONG_BULL/BULL, above VWAP, no bearish CHoCH.
    BEARISH if trend BEAR, below VWAP, no bullish CHoCH. Else NEUTRAL → HOLD.
 2. Only trade in direction of 1H bias.
-3. Entry requires at least 2 of: liq sweep + CHoCH, OB retest, FVG fill.
-4. Confidence below 5 → HOLD.
+3. Entry requires at least 2 confluences (liq sweep + CHoCH, OB retest, FVG fill).
+4. **SL must be placed beyond a structural level** (recent swing low for longs, swing high for shorts) with a small buffer (0.1-0.2%).
+5. **TP1 = first liquidity level** (previous swing high/low or equal highs/lows).
+6. **TP2 = next major liquidity pool** (daily high/low or untested swing).
+7. Confidence below 5 → HOLD.
 
-SESSION: {session}
-1H BIAS: {ind1h.get('trend','?')} | EMA Bull: {ind1h.get('ema_bull',False)} | Above VWAP: {ind1h.get('above_vwap',False)}
-5M: LiqSweepBull: {ind5m.get('liq_sweep_bull',False)} | LiqSweepBear: {ind5m.get('liq_sweep_bear',False)}
+**MARKET DATA ({pair})**
+Session: {session}
+Price: ${ind5m.get('price', 0):,.4f}
+
+**1H BIAS:**
+Trend: {ind1h.get('trend','?')} | Above VWAP: {ind1h.get('above_vwap',False)}
+CHoCH Bull: {ind1h.get('choch_bull',False)} | Bear: {ind1h.get('choch_bear',False)}
+
+**5M STRUCTURE:**
+Liq Sweep Bull: {ind5m.get('liq_sweep_bull',False)} | Bear: {ind5m.get('liq_sweep_bear',False)}
 CHoCH Bull: {ind5m.get('choch_bull',False)} | Bear: {ind5m.get('choch_bear',False)}
 FVG Bull: {ind5m.get('fvg_bull',False)} | Bear: {ind5m.get('fvg_bear',False)}
 OB Bull: {ind5m.get('ob_bull',False)} | Bear: {ind5m.get('ob_bear',False)}
-RSI: {ind5m.get('rsi',50)} | ATR%: {ind5m.get('atr_pct',0)} | Price: ${ind5m.get('price',0):,.4f}
-Fear&Greed: {fg}/100 - {sentiment_note}
+Zone: {ind5m.get('pd_zone','?')} | RSI: {ind5m.get('rsi',50)}
+Recent Swing Low: ${ind5m.get('recent_swing_low',0):,.2f} | Recent Swing High: ${ind5m.get('recent_swing_high',0):,.2f}
+Liquidity Above: ${ind5m.get('liquidity_above',0):,.2f} | Liquidity Below: ${ind5m.get('liquidity_below',0):,.2f}
+ATR: {ind5m.get('atr',0):.4f} ({ind5m.get('atr_pct',0):.3f}%)
 
-Return JSON:
-{{"action": "BUY"/"SELL"/"HOLD", "confidence": 1-10, "sl_pct": 0.5-1.5, "tp1_pct": 0.9-2.5, "tp2_pct": 2.5-5.0, "risk_pct": 1-3, "leverage": 1-50, "reasoning": "...", "setup_type": "..."}}"""
+Fear & Greed: {fg}/100 - {sentiment_note}
+
+Return JSON with **exact prices**:
+{{
+  "action": "BUY" | "SELL" | "HOLD",
+  "confidence": 1-10,
+  "sl_price": number,        // exact invalidation price (below recent swing low for longs)
+  "tp1_price": number,       // first take profit (nearby liquidity)
+  "tp2_price": number,       // second take profit (further liquidity)
+  "risk_pct": 1-3,           // % of balance to risk (position sizing)
+  "leverage": 1-50,
+  "reasoning": "Explain: bias, entry trigger, why SL at that level, why TP at those levels",
+  "setup_type": "e.g. Liq Sweep + CHoCH into OB"
+}}"""
 
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": CLAUDE_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 500, "messages": [{"role": "user", "content": prompt}]},
             timeout=15
         )
         text = r.json()["content"][0]["text"]
@@ -211,38 +219,38 @@ Return JSON:
         decision = json.loads(text[start:end])
         decision["action"] = decision.get("action", "HOLD").upper()
         decision["confidence"] = max(1, min(10, int(decision.get("confidence", 5))))
-        decision["sl_pct"] = max(0.5, min(1.5, float(decision.get("sl_pct", 0.8))))
-        decision["tp1_pct"] = max(0.9, min(2.5, float(decision.get("tp1_pct", 1.5))))
-        decision["tp2_pct"] = max(2.5, min(5.0, float(decision.get("tp2_pct", 3.5))))
         decision["risk_pct"] = max(1.0, min(3.0, float(decision.get("risk_pct", 2.0))))
-
-        # FIXED LINE: Correctly close parentheses
-        rec_lev = recommend_leverage(
-            decision["confidence"],
-            ind5m.get("atr_pct", 0.5),
-            ind1h.get("trend", "RANGING")
-        )
-        decision["leverage"] = max(1, min(50, int(decision.get("leverage", rec_lev))))
-
-        avg_tp = (decision["tp1_pct"] + decision["tp2_pct"]) / 2
-        if avg_tp < decision["sl_pct"] * 2.5:
-            decision["tp2_pct"] = round(decision["sl_pct"] * 3.5, 2)
-        print(f"[CLAUDE] {pair} → {decision['action']} conf:{decision['confidence']}/10 | {decision.get('setup_type','')}")
+        decision["leverage"] = max(1, min(50, int(decision.get("leverage",
+            recommend_leverage(decision["confidence"], ind5m.get("atr_pct",0.5), ind1h.get("trend","RANGING")))))
+        # Validate SL/TP prices
+        price = ind5m["price"]
+        if decision["action"] == "BUY":
+            if decision.get("sl_price", 0) >= price:
+                decision["sl_price"] = ind5m["recent_swing_low"] * 0.998
+            if decision.get("tp1_price", 0) <= price:
+                decision["tp1_price"] = ind5m["liquidity_above"]
+            if decision.get("tp2_price", 0) <= price:
+                decision["tp2_price"] = ind5m["liquidity_above"] * 1.01
+        elif decision["action"] == "SELL":
+            if decision.get("sl_price", 0) <= price:
+                decision["sl_price"] = ind5m["recent_swing_high"] * 1.002
+            if decision.get("tp1_price", 0) >= price:
+                decision["tp1_price"] = ind5m["liquidity_below"]
+            if decision.get("tp2_price", 0) >= price:
+                decision["tp2_price"] = ind5m["liquidity_below"] * 0.99
+        print(f"[CLAUDE] {pair} → {decision['action']} conf:{decision['confidence']}/10 | SL:${decision.get('sl_price',0):.2f} TP1:${decision.get('tp1_price',0):.2f}")
         return decision
     except Exception as e:
         print(f"[CLAUDE] Error: {e}")
-        return rule_based_fallback(ind5m, ind1h, balance)
+        return structure_based_fallback(ind5m, ind1h, balance)
 
 
-def rule_based_fallback(ind5m, ind1h, balance):
-    """Lenient fallback – trades with at least 1 strong signal and correct zone"""
-    # 1H bias strict check
+def structure_based_fallback(ind5m, ind1h, balance):
+    """Smart fallback using actual structure levels, not fixed percentages"""
     trend_1h = ind1h.get("trend", "RANGING")
     above_vwap_1h = ind1h.get("above_vwap", False)
     choch_bull_1h = ind1h.get("choch_bull", False)
     choch_bear_1h = ind1h.get("choch_bear", False)
-    liq_bull_1h = ind1h.get("liq_sweep_bull", False)
-    liq_bear_1h = ind1h.get("liq_sweep_bear", False)
 
     bias = "NEUTRAL"
     if trend_1h in ["STRONG_BULL", "BULL"] and above_vwap_1h and not choch_bear_1h:
@@ -250,7 +258,6 @@ def rule_based_fallback(ind5m, ind1h, balance):
     elif trend_1h == "BEAR" and not above_vwap_1h and not choch_bull_1h:
         bias = "BEARISH"
 
-    # 5m signals
     liq_bull = ind5m.get("liq_sweep_bull", False)
     liq_bear = ind5m.get("liq_sweep_bear", False)
     choch_bull = ind5m.get("choch_bull", False)
@@ -261,31 +268,34 @@ def rule_based_fallback(ind5m, ind1h, balance):
     ob_bear = ind5m.get("ob_bear", False)
     zone = ind5m.get("pd_zone", "equilibrium")
     rsi = ind5m.get("rsi", 50)
-    atr_pct = max(ind5m.get("atr_pct", 0.5), 0.1)
+    atr = ind5m.get("atr", 0.002 * ind5m["price"])
+    price = ind5m["price"]
+    swing_low = ind5m["recent_swing_low"]
+    swing_high = ind5m["recent_swing_high"]
+    liq_above = ind5m["liquidity_above"]
+    liq_below = ind5m["liquidity_below"]
 
-    # Trade if bias matches and at least 1 signal + correct zone
     if bias == "BULLISH":
         signals = sum([liq_bull, choch_bull, fvg_bull, ob_bull])
-        correct_zone = zone in ["discount", "equilibrium"]
-        if signals >= 1 and correct_zone and rsi < 70 and atr_pct >= 0.1:
-            sl = round(atr_pct * 1.8, 2)
-            tp1 = round(sl * 1.2, 2)
-            tp2 = round(sl * 3.5, 2)
-            lev = recommend_leverage(6, atr_pct, trend_1h)
-            return {"action":"BUY","confidence":6,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Bullish bias + signal",
-                    "invalidation_price":ind5m.get("swing_low",0),"setup_type":"SMC Fallback"}
+        if signals >= 1 and zone in ["discount", "equilibrium"] and rsi < 70:
+            sl_price = swing_low * 0.998  # 0.2% below swing low
+            tp1_price = liq_above if liq_above > price * 1.005 else price * 1.01
+            tp2_price = max(liq_above, price * 1.02)
+            lev = recommend_leverage(6, ind5m.get("atr_pct",0.5), trend_1h)
+            return {"action":"BUY","confidence":6,"sl_price":round(sl_price,2),
+                    "tp1_price":round(tp1_price,2),"tp2_price":round(tp2_price,2),
+                    "risk_pct":2,"leverage":lev,"reasoning":"Structure: SL below swing low, TP at liquidity",
+                    "setup_type":"SMC Structure Fallback"}
     elif bias == "BEARISH":
         signals = sum([liq_bear, choch_bear, fvg_bear, ob_bear])
-        correct_zone = zone in ["premium", "equilibrium"]
-        if signals >= 1 and correct_zone and rsi > 30 and atr_pct >= 0.1:
-            sl = round(atr_pct * 1.8, 2)
-            tp1 = round(sl * 1.2, 2)
-            tp2 = round(sl * 3.5, 2)
-            lev = recommend_leverage(6, atr_pct, trend_1h)
-            return {"action":"SELL","confidence":6,"sl_pct":sl,"tp1_pct":tp1,"tp2_pct":tp2,
-                    "risk_pct":2,"leverage":lev,"reasoning":"Fallback: Bearish bias + signal",
-                    "invalidation_price":ind5m.get("swing_high",0),"setup_type":"SMC Fallback"}
+        if signals >= 1 and zone in ["premium", "equilibrium"] and rsi > 30:
+            sl_price = swing_high * 1.002  # 0.2% above swing high
+            tp1_price = liq_below if liq_below < price * 0.995 else price * 0.99
+            tp2_price = min(liq_below, price * 0.98)
+            lev = recommend_leverage(6, ind5m.get("atr_pct",0.5), trend_1h)
+            return {"action":"SELL","confidence":6,"sl_price":round(sl_price,2),
+                    "tp1_price":round(tp1_price,2),"tp2_price":round(tp2_price,2),
+                    "risk_pct":2,"leverage":lev,"reasoning":"Structure: SL above swing high, TP at liquidity",
+                    "setup_type":"SMC Structure Fallback"}
 
-    print(f"[FALLBACK] {bias} bias, signals:{signals}, zone:{zone}, atr:{atr_pct:.3f}% - HOLD")
-    return {"action":"HOLD","confidence":3,"reasoning":"No valid setup","setup_type":"WAIT"}
+    return {"action":"HOLD","confidence":3,"reasoning":"No valid structure setup","setup_type":"WAIT"}
