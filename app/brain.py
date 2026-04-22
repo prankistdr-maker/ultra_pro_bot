@@ -215,7 +215,15 @@ Return JSON:
         decision["tp1_pct"] = max(0.9, min(2.5, float(decision.get("tp1_pct", 1.5))))
         decision["tp2_pct"] = max(2.5, min(5.0, float(decision.get("tp2_pct", 3.5))))
         decision["risk_pct"] = max(1.0, min(3.0, float(decision.get("risk_pct", 2.0))))
-        decision["leverage"] = max(1, min(50, int(decision.get("leverage", recommend_leverage(decision["confidence"], ind5m.get("atr_pct",0.5), ind1h.get("trend","RANGING")))))
+
+        # FIXED LINE: Correctly close parentheses
+        rec_lev = recommend_leverage(
+            decision["confidence"],
+            ind5m.get("atr_pct", 0.5),
+            ind1h.get("trend", "RANGING")
+        )
+        decision["leverage"] = max(1, min(50, int(decision.get("leverage", rec_lev))))
+
         avg_tp = (decision["tp1_pct"] + decision["tp2_pct"]) / 2
         if avg_tp < decision["sl_pct"] * 2.5:
             decision["tp2_pct"] = round(decision["sl_pct"] * 3.5, 2)
