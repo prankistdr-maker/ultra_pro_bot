@@ -84,6 +84,28 @@ def _call_gemini(prompt):
         return None
 
 
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+def _call_deepseek(prompt):
+    if not DEEPSEEK_KEY: return None
+    try:
+        r = requests.post(
+            "https://api.deepseek.com/chat/completions",
+            headers={"Authorization": f"Bearer {DEEPSEEK_KEY}",
+                     "Content-Type": "application/json"},
+            json={"model": "deepseek-chat",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0.2, "max_tokens": 400},
+            timeout=15
+        )
+        text = r.json()["choices"][0]["message"]["content"]
+        s = text.find("{"); e = text.rfind("}") + 1
+        return json.loads(text[s:e])
+    except Exception as ex:
+        print(f"[DEEPSEEK] {ex}")
+        return None
+
+
 def _call_groq(prompt):
     if not GROQ_KEY: return None
     try:
@@ -181,7 +203,7 @@ def ask_ai(pair, i5, i1, news, balance, positions):
     prompt = build_prompt(pair, i5, i1, fg, fg_label, session, balance)
 
     # Try all AI sources
-    for name, fn in [("Gemini",_call_gemini),("Groq",_call_groq),("Claude",_call_claude)]:
+    for name, fn in [("Gemini",_call_gemini),("DeepSeek",_call_deepseek),("Groq",_call_groq),("Claude",_call_claude)]:
         raw = fn(prompt)
         if raw:
             raw["_source"] = name
